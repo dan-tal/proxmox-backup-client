@@ -890,21 +890,33 @@ def api_vm_download():
     if is_dir:
         download_name += ".zip"
 
-    fmt = "zip" if is_dir else "plain"
     workdir = Path(tempfile.mkdtemp(dir=RESTORE_TMP))
-    out_path = workdir / ("archive.zip" if is_dir else "file.bin")
+    extract_dir = workdir / "out"
+    extract_dir.mkdir()
 
-    # Extragem intai local (nu la stdout) ca sa putem detecta un esec
-    # complet inainte sa trimitem vreun byte clientului, si sa incercam
-    # fallback-ul de mai jos fara sa fi trimis deja un status 200.
+    # proxmox-file-restore extrage INTOTDEAUNA ca arbore brut intr-un
+    # director cand target-ul e o cale reala (nu "-") - --format zip/plain
+    # conteaza doar la streaming spre stdout, e ignorat pt cai locale (am
+    # verificat manual: --format zip catre o cale reala tot creeaza un
+    # director cu arborele, nu un fisier .zip). Extragem local intai (nu la
+    # stdout) ca sa putem detecta un esec complet inainte sa trimitem vreun
+    # byte clientului, si sa incercam fallback-ul de mai jos fara sa fi
+    # trimis deja un status 200; pentru foldere, facem noi zip-ul dupa.
     result = subprocess.run(
-        ["proxmox-file-restore", "extract", snapshot, path, str(out_path),
-         "--format", fmt, "--base64", "true"],
+        ["proxmox-file-restore", "extract", snapshot, path, str(extract_dir),
+         "--format", "plain", "--base64", "true"],
         capture_output=True, text=True, env=pbs_env(),
     )
     primary_err = result.stderr.strip()
-    if result.returncode == 0 and not primary_err and out_path.exists():
-        return send_and_cleanup(out_path, download_name, workdir)
+
+    if result.returncode == 0 and not primary_err:
+        if is_dir:
+            zip_path = workdir / "archive.zip"
+            zip_directory(extract_dir, zip_path)
+            return send_and_cleanup(zip_path, download_name, workdir)
+        extracted = list(extract_dir.iterdir())
+        if len(extracted) == 1 and extracted[0].is_file():
+            return send_and_cleanup(extracted[0], download_name, workdir)
 
     shutil.rmtree(workdir, ignore_errors=True)
     print(
