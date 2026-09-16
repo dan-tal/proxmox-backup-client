@@ -49,12 +49,47 @@ const MODES = {
 
 const ICONS = { dir: ["folder", "text-amber-300"], disk: ["disk", "text-violet-300"], symlink: ["link", "text-zinc-500"] };
 
+// Descarca prin fetch (nu <a href> simplu) ca sa putem intercepta un
+// raspuns de eroare (ex: 409 fisier deduplicat) si sa-l afisam formatat
+// in loc sa navigheze browser-ul la JSON brut.
+async function triggerDownload(url, filename, setError) {
+  setError(null);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    setError(`Nu s-a putut contacta serverul: ${e.message}`);
+    return;
+  }
+  if (!res.ok) {
+    let message = `Eroare ${res.status} la descărcare`;
+    try {
+      const data = await res.json();
+      if (data.error) message = data.error;
+    } catch {
+      // raspuns non-JSON, pastram mesajul generic
+    }
+    setError(message);
+    return;
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
 export default function FileBrowser({ snapshot, archive }) {
   const mode = MODES[archive.kind];
   const [trail, setTrail] = useState([
     { name: archiveLabel(archive), ref: mode.rootRef(archive.filename), downloadable: false },
   ]);
   const [query, setQuery] = useState("");
+  const [downloadError, setDownloadError] = useState(null);
   const current = trail[trail.length - 1];
   const atRoot = trail.length === 1;
 
@@ -113,15 +148,22 @@ export default function FileBrowser({ snapshot, archive }) {
           className={`${inputCls} w-36`}
         />
         {current.downloadable && (
-          <a href={downloadUrl(current)} className={primaryBtn} title="Descarcă directorul curent ca ZIP">
+          <button
+            onClick={() => triggerDownload(downloadUrl(current), `${current.name}.zip`, setDownloadError)}
+            className={primaryBtn}
+            title="Descarcă directorul curent ca ZIP"
+          >
             <Icon name="download" /> ZIP
-          </a>
+          </button>
         )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {listing.loading && <Loading label={mode.loadingHint} />}
         {listing.error && <ErrorBox message={listing.error} onRetry={listing.reload} />}
+        {downloadError && (
+          <ErrorBox message={downloadError} onRetry={() => setDownloadError(null)} />
+        )}
         {listing.data && entries.length === 0 && <Empty>{query ? "Nicio potrivire" : "Director gol"}</Empty>}
         {entries.length > 0 && (
           <table className="w-full table-fixed text-sm">
@@ -137,7 +179,19 @@ export default function FileBrowser({ snapshot, archive }) {
             </thead>
             <tbody>
               {entries.map((entry) => (
-                <FileRow key={entry.ref} entry={entry} onOpen={open} downloadUrl={downloadUrl(entry)} />
+                <FileRow
+                  key={entry.ref}
+                  entry={entry}
+                  onOpen={open}
+                  downloadUrl={downloadUrl(entry)}
+                  onDownload={() =>
+                    triggerDownload(
+                      downloadUrl(entry),
+                      entry.navigable ? `${entry.name}.zip` : entry.name,
+                      setDownloadError,
+                    )
+                  }
+                />
               ))}
             </tbody>
           </table>
@@ -147,7 +201,7 @@ export default function FileBrowser({ snapshot, archive }) {
   );
 }
 
-function FileRow({ entry, onOpen, downloadUrl }) {
+function FileRow({ entry, onOpen, downloadUrl, onDownload }) {
   const [copied, setCopied] = useState(false);
   const [icon, color] = ICONS[entry.type] || ["file", "text-zinc-500"];
   const label = (
@@ -188,9 +242,9 @@ function FileRow({ entry, onOpen, downloadUrl }) {
             <button onClick={copyLink} title="Copiază link-ul de descărcare" className={iconBtn}>
               <Icon name={copied ? "check" : "copy"} />
             </button>
-            <a href={downloadUrl} title={entry.navigable ? "Descarcă ca ZIP" : "Descarcă"} className={iconBtn}>
+            <button onClick={onDownload} title={entry.navigable ? "Descarcă ca ZIP" : "Descarcă"} className={iconBtn}>
               <Icon name="download" />
-            </a>
+            </button>
           </div>
         )}
       </td>
