@@ -1,32 +1,57 @@
-# PBS File Restore — setup LXC (deploy recomandat)
+# PBS File Restore UI
 
-## De ce LXC și nu Docker direct pe host
+Interfață web minimală pentru browsing și download read-only de fișiere din
+backup-uri Proxmox Backup Server — atât pentru containere (CT, arhive
+`.pxar`) cât și pentru mașini virtuale (VM, imagini de disc `.img.fidx`).
 
-Rularea `proxmox-file-restore` boot-eaza intern o micro-VM QEMU/KVM ca sa
-citeasca filesystem-ul din interiorul unui disc de VM (la fel ca functia
-"File Restore" din PVE). Daca serviciul ruleaza intr-un mediu unde `/dev/kvm`
-nu ofera acceleratie hardware reala (host virtualizat cu nested-virt
-dezactivat, sau container fara device passthrough corect), micro-VM-ul cade
-pe emulare software (QEMU TCG) si boot-ul poate dura minute intregi sau se
-blocheaza complet, fara niciun mesaj de eroare pe stderr.
+## Arhitectură
 
-Solutia: un **LXC privilegiat**, rulat direct pe un nod Proxmox bare-metal,
-cu `/dev/kvm` si celelalte device-uri necesare pasate direct din host. Un LXC
-nu adauga un nivel suplimentar de virtualizare (e doar izolare de
-namespace-uri peste kernel-ul host-ului), deci `/dev/kvm` din interior e
-KVM-ul real al host-ului — exact ca la file-restore-ul nativ din PVE.
+- **Backend**: `app.py`, Flask, wrapper subțire peste binarele oficiale
+  `proxmox-backup-client` și `proxmox-backup-file-restore`.
+- **Frontend**: `frontend/`, React + Vite + Tailwind, build static servit
+  direct de Flask din `static/`.
+- **Fără bază de date** — totul e citit live din PBS la fiecare cerere.
 
-Testat: listarea unui director din interiorul unui disc de VM a durat
-**~2.7s** in LXC-ul privilegiat, fata de timeout la 300s in Docker cu
-nested-KVM nefunctional.
+Două mecanisme de acces la fișiere, în funcție de tipul arhivei:
 
-## 1. Creeaza LXC-ul (pe host, ca root)
+| Tip backup | Arhivă | Mecanism |
+|---|---|---|
+| CT | `.pxar` | `proxmox-backup-client mount` — montează arhiva local (FUSE), acces direct la filesystem |
+| VM | `.img.fidx` | `proxmox-backup-file-restore list/extract` — boot-ează intern o micro-VM QEMU/KVM care interpretează filesystem-ul din disc (exact ca funcția "File Restore" din GUI-ul PVE) |
 
-Foloseste un template Debian deja descarcat (`pveam list local` ca sa
-verifici ce ai disponibil; `pveam update && pveam available --section system
-| grep -i debian` daca nu ai niciunul).
+Al doilea mecanism are nevoie de **acces real la KVM** (`/dev/kvm`) ca să
+pornească rapid — motivul pentru care aplicația rulează într-un LXC
+privilegiat pe un nod Proxmox, nu în Docker (vezi mai jos, secțiunea
+"De ce nu Docker").
+
+## De ce nu Docker
+
+Prima variantă de deploy a fost un container Docker (`Dockerfile`,
+`compose.yml` — șterse din proiect, recuperabile din istoricul git).
+Simptom: `proxmox-file-restore list` pe un disc VM se bloca minute întregi,
+fără niciun stderr, deși în GUI-ul PVE aceeași operație dura 1-2 secunde.
+
+Cauza: containerul Docker rula pe un host cu **nested-virtualization
+indisponibilă**, deci `/dev/kvm` era prezent ca device, dar QEMU cădea
+silențios pe emulare software (TCG) în loc de accelerare hardware reală —
+de unde blocajul.
+
+**Soluție**: un LXC **privilegiat** direct pe nodul Proxmox. Un LXC nu
+adaugă un hypervisor nou, doar izolare de namespace-uri peste kernel-ul
+host-ului — deci `/dev/kvm` din interior e KVM-ul real al host-ului, un
+singur nivel de virtualizare, la fel ca file-restore-ul nativ din PVE.
+
+## Instalare de la zero (LXC pe Proxmox)
+
+Toate comenzile de mai jos rulează **pe nodul Proxmox** (host), cu excepția
+secțiunilor marcate explicit "în container".
+
+### 1. Creează LXC-ul (Debian 13, privilegiat)
 
 ```bash
+pveam list local   # confirmă ca ai template-ul debian-13-standard descarcat local
+# daca nu il ai: pveam update && pveam download local debian-13-standard_13.1-2_amd64.tar.zst
+
 pct create 100 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
   --hostname pbs-restore \
   --cores 2 \
@@ -39,25 +64,22 @@ pct create 100 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
   --onboot 1
 ```
 
-Puncte importante:
-- `--unprivileged 0` = container **privilegiat**. Flag-ul `unprivileged` nu
-  poate fi schimbat dupa creare (`pct set` da eroare "read-only option") —
-  daca ai creat deja unul unprivileged din greseala, cel mai simplu e sa-l
-  distrugi (`pct destroy <id>`) si sa-l recreezi, nu sa incerci sa-l
-  convertesti.
-- `--features nesting=1,keyctl=1` permite virtualizare (QEMU/KVM) in
-  interiorul containerului.
+`--unprivileged 0` = container **privilegiat**. Nu se poate schimba ulterior
+pe un container existent — dacă ai nevoie să convertești unul deja creat,
+cel mai simplu e `pct destroy` + recreare (nu se poate cu `pct set`).
 
-## 2. Adauga device passthrough pentru KVM/vsock/fuse
+### 2. Device passthrough pentru KVM/vsock
 
-Numerele major:minor de mai jos trebuie confirmate pe host-ul tau (pot
-diferi intre sisteme):
+Aflat mai întâi numerele major:minor reale ale device-urilor de pe host
+(pot diferi de la un sistem la altul):
 
 ```bash
 ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse
 ```
 
-Apoi adauga in `/etc/pve/lxc/<ID>.conf` (inlocuieste `100` cu ID-ul real):
+Adaugă-le în config-ul LXC-ului (înlocuiește minor-ele dacă diferă de mai
+jos; la noi au fost `kvm=232`, `vhost-net=238`, `vhost-vsock=241`,
+`fuse=229`):
 
 ```bash
 cat <<'CONF' >> /etc/pve/lxc/100.conf
@@ -70,40 +92,37 @@ lxc.mount.entry: /dev/vhost-vsock dev/vhost-vsock none bind,optional,create=file
 lxc.cgroup2.devices.allow: c 10:229 rwm
 lxc.mount.entry: /dev/fuse dev/fuse none bind,optional,create=file
 CONF
-
-pct start 100
 ```
 
-**Atentie la fisierele de config cu snapshot-uri**: daca `/etc/pve/lxc/<ID>.conf`
-contine deja o sectiune de forma `[nume-snapshot]` (creata cand containerul
-are un snapshot), liniile adaugate cu `>>` la finalul fisierului ajung in
-sectiunea de snapshot, nu in config-ul live — si nu au niciun efect. Verifica
-mereu cu `cat /etc/pve/lxc/<ID>.conf` ca liniile de `lxc.cgroup2.devices.allow`
-/ `lxc.mount.entry` sunt **inainte** de orice linie `[...]`. Cel mai simplu e
-sa pleci de la un LXC proaspat, fara snapshot-uri, cum s-a facut mai sus.
+> **Atenție**: dacă LXC-ul are deja o secțiune de snapshot în fișierul de
+> config (ex. `[nume-snapshot]`), liniile adăugate cu `>>` trebuie să fie
+> **înainte** de acea secțiune, altfel Proxmox le atribuie snapshot-ului,
+> nu config-ului live. Verifică mereu cu `cat /etc/pve/lxc/<ID>.conf` după
+> ce editezi.
 
-## 3. Verifica accesul la KVM din interiorul containerului
+Pornește și verifică din interior:
 
 ```bash
+pct start 100
 pct enter 100
 ```
 
-In container:
+**În container:**
 
 ```bash
-ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse
-
-apt-get update && apt-get install -y cpu-checker && kvm-ok
-# asteptat: "INFO: /dev/kvm exists" + "KVM acceleration can be used"
+ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse   # toate 4 trebuie sa apara
+apt-get update && apt-get install -y cpu-checker && kvm-ok  # trebuie: "KVM acceleration can be used"
 ```
 
-Daca oricare device lipseste sau `kvm-ok` esueaza, verifica pasul 2 (numerele
-major:minor trebuie sa corespunda exact cu cele de pe host) si ca ai pornit
-containerul dupa ce ai adaugat liniile in `.conf`.
+Dacă `kvm-ok` spune că nu poate accelera, verifică pe host dacă nested-virt
+e activă (dacă host-ul Proxmox e el însuși o VM):
 
-## 4. Instaleaza pachetele client Proxmox Backup
+```bash
+egrep -c '(vmx|svm)' /proc/cpuinfo
+cat /sys/module/kvm_intel/parameters/nested   # sau kvm_amd
+```
 
-Aceleasi pachete ca in `Dockerfile`-ul din acest proiect:
+### 3. Instalează pachetele client PBS (în container)
 
 ```bash
 apt-get install -y curl gnupg ca-certificates fuse3
@@ -117,61 +136,150 @@ echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" \
     > /etc/apt/sources.list.d/pve.list
 
 apt-get update
-apt-get install -y proxmox-backup-client proxmox-backup-file-restore proxmox-backup-restore-image pve-qemu-kvm
+apt-get install -y proxmox-backup-client proxmox-backup-file-restore \
+    proxmox-backup-restore-image pve-qemu-kvm python3-flask
 ```
 
-Verificare:
+Verificare rapidă:
 
 ```bash
 which proxmox-backup-client proxmox-file-restore
 dpkg -l | grep -E 'proxmox-backup|pve-qemu'
 ```
 
-## 5. Testeaza conectivitatea la PBS si viteza file-restore
+### 4. Deploy-ul aplicației
 
-`bash` face history-expansion pe caracterul `!` din `PBS_REPOSITORY` (format
-`user@realm!token@host:port:datastore`) — dezactiveaz-o inainte cu `set +H`,
-sau pune valorile intr-un fisier `.env` incarcat cu `source`/`export
-$(cat .env | xargs)` in loc sa le tastezi direct in shell.
+Vezi secțiunea **"Deploy și actualizări (git)"** mai jos pentru fluxul
+recomandat. Pe scurt, în container:
 
 ```bash
-set +H
-export PBS_REPOSITORY="<user>@<realm>!<token>@<host>:<port>:<datastore>"
-export PBS_PASSWORD="<token-secret>"
-export PBS_FINGERPRINT="<fingerprint-ul certificatului PBS>"
-
-proxmox-backup-client snapshot list vm/<ID_VM> --output-format json
+mkdir -p /opt/pbs-restore /mnt/pbs_mounts /var/tmp/pbs-restore
+cd /opt/pbs-restore
+git clone <url-repo> .   # sau git pull, daca exista deja
 ```
 
-Daca listarea de snapshot-uri merge, testeaza fluxul complet de file-restore
-pe un disc de VM (inlocuieste snapshot-ul cu unul real din output-ul de mai
-sus; `backup-time` e un epoch, converteste-l cu `date -u -d @<epoch>
-+"%Y-%m-%dT%H:%M:%SZ"`):
+### 5. Serviciul systemd
 
 ```bash
-# 1. listeaza discurile disponibile in snapshot (rapid, nu boot-eaza VM)
-time proxmox-file-restore list vm/<ID_VM>/<timestamp> / --output-format json
+cat <<'UNIT' > /etc/systemd/system/pbs-restore.service
+[Unit]
+Description=PBS File Restore UI
+After=network-online.target
+Wants=network-online.target
 
-# 2. intra in disc - AICI porneste micro-VM-ul de restore
-time proxmox-file-restore list vm/<ID_VM>/<timestamp> <filepath-base64-din-pasul-1> --base64 true --output-format json
+[Service]
+Type=simple
+WorkingDirectory=/opt/pbs-restore
+Environment=APP_USERNAME=admin
+Environment=APP_PASSWORD=
+Environment=SECRET_KEY=
+Environment=ALLOWED_GROUPS=
+ExecStart=/usr/bin/python3 /opt/pbs-restore/app.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now pbs-restore
+systemctl status pbs-restore --no-pager
 ```
 
-Rezultat asteptat: pasul 2 sub ~5 secunde (in loc de minute/timeout). Daca
-tot da timeout aici, dupa ce toate verificarile de mai sus au trecut, cel
-mai probabil e o problema de conectivitate de retea intre LXC si serverul
-PBS (nu mai e KVM), sau un VM de restore orfan care tine ocupat un CID vsock
-(vezi `reap_stale_restore_vms()` din `app.py`).
+Notă: **PBS_REPOSITORY / PBS_PASSWORD / PBS_FINGERPRINT nu mai sunt
+variabile de mediu** — se configurează din interfața web (vezi mai jos),
+nu mai e nevoie de ele în unit-ul systemd.
 
-## 6. Urmatorul pas: rularea aplicatiei (`app.py`) in acest LXC
+### 6. Prima configurare (din GUI)
 
-Doua optiuni, ambele functionale de vreme ce LXC-ul are deja KVM real:
+Deschide `http://<ip-lxc>:8080`, apasă iconul de setări (roată dințată) din
+header, completează:
 
-- **Direct, ca serviciu systemd** (fara Docker): copiaza `app.py`,
-  `pbs_query.py` si build-ul din `frontend/dist/` in `/app`, instaleaza
-  `python3-flask`, seteaza variabilele de mediu din `.env` si porneste cu
-  `python3 app.py` (sau un unit systemd care sa-l tina activ).
-- **Docker in interiorul LXC-ului**: LXC-ul e privilegiat si mosteneste
-  accesul la `/dev/kvm`, deci `compose.yml`/`Dockerfile` existente pot rula
-  neschimbate direct in interiorul containerului (Docker-in-LXC-privilegiat).
+- **Repository**: `user@realm!token@host:port:datastore` (ex.
+  `restore-client@pbs!pve-restore-nou@192.168.99.7:8007:hdd6t`)
+- **Parolă / token secret**
+- **Fingerprint** (opțional, dar recomandat)
 
-Nu s-a implementat inca acest pas — de facut la nevoie.
+La salvare, aplicația testează imediat conectivitatea (`proxmox-backup-client
+list`) și confirmă vizual dacă merge sau nu. Setările se scriu în
+`/etc/pbs-restore/config.json` (permisiuni `600`), citite live la fiecare
+apel — nu necesită restart de serviciu.
+
+## Deploy și actualizări (git)
+
+Proiectul nu are un remote extern by design (setup intern). Pentru a evita
+`scp` manual de fiecare dată când modifici codul, cel mai simplu e un
+**repo bare pe nodul Proxmox** (accesibil deja pe aceeași rețea, prin SSH):
+
+**Pe host-ul Proxmox (o singură dată):**
+
+```bash
+mkdir -p /root/git/pbs-restore.git
+git init --bare /root/git/pbs-restore.git
+```
+
+**Pe mașina de dezvoltare (unde e proiectul, o singură dată):**
+
+```bash
+git remote add pve ssh://root@<ip-proxmox>/root/git/pbs-restore.git
+git push pve master
+```
+
+**În LXC (o singură dată, la primul deploy):**
+
+```bash
+mkdir -p /opt/pbs-restore
+git clone ssh://root@<ip-proxmox>/root/git/pbs-restore.git /opt/pbs-restore
+```
+
+**La fiecare modificare ulterioară**, fluxul e:
+
+```bash
+# 1. pe mașina de dev, dupa ce ai commit-uit modificarile
+git push pve master
+
+# 2. in frontend, daca ai modificat ceva in frontend/src
+cd frontend && npm run build   # regenereaza frontend/dist, il commit-ui si el
+
+# 3. in LXC
+cd /opt/pbs-restore && git pull
+systemctl restart pbs-restore
+```
+
+`frontend/dist/` (build-ul compilat) e ținut în git intenționat, ca LXC-ul
+să nu aibă nevoie de Node.js instalat — `git pull` + `systemctl restart`
+e suficient pentru orice update, backend sau frontend.
+
+## Structura proiectului
+
+```
+app.py                  backend Flask (toate rutele /api/*)
+pbs_query.py             utilitar CLI standalone (nu e folosit de app.py, util pt debugging manual)
+frontend/src/            sursele React
+frontend/dist/           build-ul compilat, servit static de Flask (comitat in git)
+```
+
+## Rute API principale
+
+| Rută | Descriere |
+|---|---|
+| `GET /api/groups`, `/api/snapshots` | listare grupuri/snapshot-uri PBS |
+| `GET /api/browse`, `/api/download` | browsing/download arhive `.pxar` (CT) |
+| `GET /api/vm-browse`, `/api/vm-download` | browsing/download disc VM, via `proxmox-file-restore` |
+| `GET /api/vm-check-access` | test rapid (timeout 20s) — confirmă dacă micro-VM-ul de restore poate porni, cu diagnostic detaliat (devices KVM/vsock, VM-uri orfane) dacă eșuează |
+| `GET/POST /api/pbs-config` | citire/salvare conexiune PBS, testată live la salvare |
+
+## Troubleshooting
+
+- **`proxmox-file-restore` se blochează, fără stderr** → verifică
+  `docker logs`/`journalctl -u pbs-restore` pentru diagnosticul automat
+  (`[file-restore] diagnostic la timeout: ...`), care spune exact dacă
+  problema e un device KVM/vsock lipsă sau un VM de restore orfan (CID
+  ocupat).
+- **"path invalid" la navigare în disc VM** → verifică versiunea de
+  `app.py`; e un bug rezolvat (validarea cerea greșit slash la începutul
+  path-ului, deși `proxmox-file-restore` întoarce filepath-uri fără slash
+  pentru nivelurile mai adânci de root).
+- **`kvm-ok` spune că nu poate accelera** → vezi secțiunea 2 de mai sus
+  (nested-virt dezactivată pe host, dacă host-ul Proxmox e el însuși o VM).

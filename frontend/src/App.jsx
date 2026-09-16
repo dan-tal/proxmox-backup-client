@@ -5,6 +5,7 @@ import FileBrowser from "./components/FileBrowser.jsx";
 import GroupList from "./components/GroupList.jsx";
 import Icon from "./components/Icon.jsx";
 import LoginForm from "./components/LoginForm.jsx";
+import SettingsModal from "./components/SettingsModal.jsx";
 import SnapshotList from "./components/SnapshotList.jsx";
 import { Empty, ErrorBox, Loading } from "./components/Status.jsx";
 import { iconBtn } from "./components/ui.js";
@@ -72,6 +73,7 @@ function Workspace({ user, onLogout }) {
   const [group, setGroup] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [archiveName, setArchiveName] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const groups = useResource(() => api.groups(), []);
   const snapshots = useResource(group ? () => api.snapshots(group.group) : null, [group?.group]);
@@ -104,12 +106,17 @@ function Workspace({ user, onLogout }) {
           <p className="truncate text-xs text-zinc-500">Browsing și download read-only din backup-uri</p>
         </div>
         {user && <span className="hidden text-sm text-zinc-400 sm:inline">{user}</span>}
+        <button onClick={() => setSettingsOpen(true)} title="Setări conexiune PBS" className={iconBtn}>
+          <Icon name="settings" />
+        </button>
         {onLogout && (
           <button onClick={onLogout} title="Deconectare" className={iconBtn}>
             <Icon name="logout" />
           </button>
         )}
       </header>
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       <main className="grid min-h-0 flex-1 grid-rows-1 lg:grid-cols-[17rem_19rem_1fr] lg:divide-x lg:divide-zinc-800">
         <section className={pane("groups")}>

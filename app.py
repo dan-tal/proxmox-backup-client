@@ -49,6 +49,47 @@ ALLOWED_GROUPS = {g.strip() for g in os.environ.get("ALLOWED_GROUPS", "").split(
 if not APP_PASSWORD:
     print("ATENTIE: APP_PASSWORD nesetat - interfata nu cere autentificare", flush=True)
 
+# Config conexiune PBS (repository/password/fingerprint), editabil din GUI
+# (Setari), salvat pe disk ca sa supravietuiasca la restart. La prima
+# pornire, daca fisierul nu exista, cade pe vechile variabile de mediu
+# PBS_REPOSITORY/PBS_PASSWORD/PBS_FINGERPRINT (compatibilitate cu deploy-ul vechi).
+PBS_CONFIG_PATH = Path(os.environ.get("PBS_CONFIG_PATH", "/etc/pbs-restore/config.json"))
+_pbs_config_lock = threading.Lock()
+
+
+def load_pbs_config():
+    with _pbs_config_lock:
+        try:
+            return json.loads(PBS_CONFIG_PATH.read_text())
+        except (OSError, ValueError):
+            return {
+                "repository": os.environ.get("PBS_REPOSITORY", ""),
+                "password": os.environ.get("PBS_PASSWORD", ""),
+                "fingerprint": os.environ.get("PBS_FINGERPRINT", ""),
+            }
+
+
+def save_pbs_config(repository, password, fingerprint):
+    PBS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {"repository": repository, "password": password, "fingerprint": fingerprint}
+    with _pbs_config_lock:
+        PBS_CONFIG_PATH.write_text(json.dumps(data))
+        PBS_CONFIG_PATH.chmod(0o600)
+
+
+def pbs_env():
+    """Env pentru subprocesele proxmox-backup-client/proxmox-file-restore,
+    cu setarile din config.json suprapuse peste environment-ul procesului."""
+    cfg = load_pbs_config()
+    env = os.environ.copy()
+    if cfg.get("repository"):
+        env["PBS_REPOSITORY"] = cfg["repository"]
+    if cfg.get("password"):
+        env["PBS_PASSWORD"] = cfg["password"]
+    if cfg.get("fingerprint"):
+        env["PBS_FINGERPRINT"] = cfg["fingerprint"]
+    return env
+
 MOUNT_ROOT = Path("/mnt/pbs_mounts")
 MOUNT_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -69,7 +110,7 @@ _lock = threading.Lock()
 def run_pbs_json(args):
     result = subprocess.run(
         ["proxmox-backup-client", *args, "--output-format", "json"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=pbs_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "eroare necunoscuta de la proxmox-backup-client")
@@ -100,7 +141,7 @@ def run_file_restore(args, timeout=FILE_RESTORE_TIMEOUT):
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+            cmd, capture_output=True, text=True, timeout=timeout, env=pbs_env(),
         )
     except subprocess.TimeoutExpired as e:
         elapsed = round(time.time() - start, 1)
@@ -167,7 +208,7 @@ def extract_conf(snapshot, conf_blob):
 
     result = subprocess.run(
         ["proxmox-backup-client", "restore", snapshot, conf_blob, "-"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=pbs_env(),
     )
     fields = {}
     if result.returncode == 0:
@@ -216,7 +257,7 @@ def get_mount_path(snapshot, archive):
 
         proc = subprocess.Popen(
             ["proxmox-backup-client", "mount", snapshot, archive, str(target)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=pbs_env(),
         )
 
         deadline = time.time() + MOUNT_WAIT_TIMEOUT
@@ -459,6 +500,50 @@ def api_logout():
     return jsonify({"ok": True})
 
 
+REPOSITORY_RE = re.compile(r"^[^!@]+@[^!@]+![^!@]+@[^!@/:]+(:\d+)?:[^!@]+$")
+FINGERPRINT_RE = re.compile(r"^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$")
+
+
+@app.route("/api/pbs-config")
+def api_pbs_config():
+    cfg = load_pbs_config()
+    return jsonify({
+        "repository": cfg.get("repository", ""),
+        "fingerprint": cfg.get("fingerprint", ""),
+        "password_set": bool(cfg.get("password")),
+    })
+
+
+@app.route("/api/pbs-config", methods=["POST"])
+def api_pbs_config_save():
+    body = request.get_json(silent=True) or {}
+    repository = str(body.get("repository", "")).strip()
+    fingerprint = str(body.get("fingerprint", "")).strip()
+    password = body.get("password")
+
+    if not repository or not REPOSITORY_RE.match(repository):
+        return jsonify({"error": "repository invalid (format: user@realm!token@host:port:datastore)"}), 400
+    if fingerprint and not FINGERPRINT_RE.match(fingerprint):
+        return jsonify({"error": "fingerprint invalid (format XX:XX:...:XX, 32 perechi hex)"}), 400
+
+    cfg = load_pbs_config()
+    if password is None:
+        password = cfg.get("password", "")  # pastreaza parola existenta daca nu s-a trimis una noua
+    else:
+        password = str(password)
+    if not password:
+        return jsonify({"error": "parola PBS lipseste"}), 400
+
+    save_pbs_config(repository, password, fingerprint)
+
+    try:
+        run_pbs_json(["list"])
+    except RuntimeError as e:
+        return jsonify({"success": False, "error": f"setari salvate, dar testul de conectivitate a esuat: {e}"})
+
+    return jsonify({"success": True, "message": "Setari salvate, conexiune confirmata"})
+
+
 @app.route("/api/groups")
 def api_groups():
     try:
@@ -689,7 +774,7 @@ def api_vm_download():
     proc = subprocess.Popen(
         ["proxmox-file-restore", "extract", snapshot, path, "-",
          "--format", fmt, "--base64", "true"],
-        stdout=subprocess.PIPE, stderr=stderr_file,
+        stdout=subprocess.PIPE, stderr=stderr_file, env=pbs_env(),
     )
 
     # Citim primul chunk inainte de a trimite raspunsul, ca sa putem

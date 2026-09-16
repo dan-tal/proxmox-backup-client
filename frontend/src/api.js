@@ -39,4 +39,12 @@ export const api = {
   browseVm: (snapshot, path) => request(`/api/vm-browse?${qs({ snapshot, path })}`),
   downloadVmUrl: (snapshot, path, kind) => `/api/vm-download?${qs({ snapshot, path, kind })}`,
   checkVmAccess: (snapshot) => request(`/api/vm-check-access?${qs({ snapshot })}`),
+
+  pbsConfig: () => request("/api/pbs-config"),
+  savePbsConfig: (repository, password, fingerprint) =>
+    request("/api/pbs-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repository, password: password || null, fingerprint }),
+    }),
 };
