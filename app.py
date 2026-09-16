@@ -781,11 +781,15 @@ def api_vm_download():
     # raporta o eroare (ex: VM de restore care nu a pornit) ca JSON 502
     # in loc de un fisier trunchiat cu status 200.
     first_chunk = proc.stdout.read(65536)
-    if not first_chunk and proc.wait() != 0:
+    if not first_chunk:
+        returncode = proc.wait()
         stderr_file.seek(0)
         err = stderr_file.read().decode(errors="replace").strip()
         stderr_file.close()
-        return jsonify({"error": err or "eroare la extragere din imaginea de disc"}), 502
+        # returncode 0 + iesire goala + stderr nevid = extragere esuata silentios
+        # (vazut la fisiere cu nume ce contin diacritice - vezi README, troubleshooting).
+        if returncode != 0 or err:
+            return jsonify({"error": err or "eroare la extragere din imaginea de disc"}), 502
 
     def generate():
         try:

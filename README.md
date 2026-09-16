@@ -220,6 +220,8 @@ Environment=APP_USERNAME=admin
 Environment=APP_PASSWORD=
 Environment=SECRET_KEY=
 Environment=ALLOWED_GROUPS=
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
 ExecStart=/usr/bin/python3 /opt/pbs-restore/app.py
 Restart=on-failure
 RestartSec=3
@@ -236,6 +238,12 @@ systemctl status pbs-restore --no-pager
 Notă: **PBS_REPOSITORY / PBS_PASSWORD / PBS_FINGERPRINT nu mai sunt
 variabile de mediu** — se configurează din interfața web (vezi mai jos),
 nu mai e nevoie de ele în unit-ul systemd.
+
+Notă: **LANG/LC_ALL=C.UTF-8** e necesar pentru fișiere cu diacritice (ntfs-3g,
+folosit de `proxmox-file-restore` în interiorul micro-VM-ului de restore, are
+nevoie de un locale UTF-8 ca să caute nume de fișiere cu caractere non-ASCII —
+fără el, listarea merge, dar extragerea eșuează silențios cu 0 bytes). Vezi
+Troubleshooting mai jos.
 
 ### 6. Prima configurare (din GUI)
 
@@ -319,3 +327,18 @@ frontend/dist/           build-ul compilat, servit static de Flask (comitat in g
   pentru nivelurile mai adânci de root).
 - **`kvm-ok` spune că nu poate accelera** → vezi secțiunea 2 de mai sus
   (nested-virt dezactivată pe host, dacă host-ul Proxmox e el însuși o VM).
+- **Fișier cu diacritice în nume se descarcă cu 0 bytes** (deși apare corect
+  în listare și se vede cu mărimea reală în GUI-ul PVE) → containerul nu are
+  un locale UTF-8 setat pentru serviciul `pbs-restore`. Verifică:
+  ```bash
+  systemctl show pbs-restore -p Environment | grep -o 'LANG=[^ ]*'
+  ```
+  Dacă lipsește, adaugă `Environment=LANG=C.UTF-8` și
+  `Environment=LC_ALL=C.UTF-8` în `/etc/systemd/system/pbs-restore.service`
+  (secțiunea `[Service]`), apoi:
+  ```bash
+  systemctl daemon-reload && systemctl restart pbs-restore
+  ```
+  LXC-urile create cu `scripts/setup-lxc.sh` de la
+  [commit-ul curent](https://github.com/dan-tal/proxmox-backup-client) au
+  deja aceste variabile; problema apare doar pe instalări mai vechi.

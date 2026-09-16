@@ -299,6 +299,12 @@ Environment=APP_USERNAME=admin
 Environment=APP_PASSWORD=
 Environment=SECRET_KEY=
 Environment=ALLOWED_GROUPS=
+# LANG/LC_ALL: fara un locale UTF-8, ntfs-3g (folosit de proxmox-file-restore
+# in interiorul micro-VM-ului de restore) nu poate cauta fisiere cu nume ce
+# contin diacritice - listarea lor merge, dar extragerea esueaza silentios
+# (0 bytes, exit code 0). C.UTF-8 e inclus in glibc, nu necesita locale-gen.
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
 ExecStart=/usr/bin/python3 ${APP_DIR}/app.py
 Restart=on-failure
 RestartSec=3

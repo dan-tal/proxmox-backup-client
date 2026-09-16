@@ -180,7 +180,7 @@ function FileRow({ entry, onOpen, downloadUrl }) {
           <span className="flex min-w-0 items-center gap-2.5">{label}</span>
         )}
       </td>
-      <td className="px-2 py-1.5 text-right text-zinc-400 tabular-nums">{entry.navigable ? "" : formatSize(entry.size)}</td>
+      <td className="px-2 py-1.5 text-right text-zinc-400 tabular-nums">{formatSize(entry.size)}</td>
       <td className="hidden px-2 py-1.5 text-zinc-500 tabular-nums xl:table-cell">{formatTime(entry.mtime)}</td>
       <td className="px-4 py-1.5">
         {entry.downloadable && (
