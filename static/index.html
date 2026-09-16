@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PBS File Restore</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e4e6eb;
+    --muted: #8b92a3; --accent: #4f8cff; --accent-hover: #6ba0ff; --danger: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 15px; }
+  .layout { display: grid; grid-template-columns: 260px 260px 1fr; gap: 1px; background: var(--border); height: calc(100vh - 49px); }
+  .panel { background: var(--panel); overflow-y: auto; padding: 10px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 4px 8px 10px; }
+  .item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .item:hover { background: #1f2430; }
+  .item.active { background: var(--accent); color: white; }
+  .item .meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .item.active .meta { color: #d8e3ff; }
+  .breadcrumb { padding: 8px; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .breadcrumb span { cursor: pointer; }
+  .breadcrumb span:hover { color: var(--accent-hover); }
+  .row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  .row:hover { background: #1f2430; }
+  .row .name { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .size { color: var(--muted); font-size: 11px; width: 80px; text-align: right; }
+  .icon { width: 16px; text-align: center; }
+  .btn { background: var(--accent); color: white; border: none; border-radius: 5px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+  .btn:hover { background: var(--accent-hover); }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: #2a2f3a; color: var(--muted); }
+  .badge.ok { background: #1c3a26; color: #6ee08b; }
+  .badge.warn { background: #3a2e1c; color: #e0b56e; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
+  .error { color: var(--danger); font-size: 12px; padding: 10px; }
+  .loading { color: var(--muted); font-size: 12px; padding: 10px; }
+</style>
+</head>
+<body>
+<header>PBS File Restore &mdash; browsing &amp; download read-only</header>
+<div class="layout">
+  <div class="panel" id="groups-panel">
+    <h2>Grupuri backup</h2>
+    <div id="groups"><div class="loading">Se incarca...</div></div>
+  </div>
+  <div class="panel" id="snapshots-panel">
+    <h2>Snapshot-uri</h2>
+    <div id="snapshots"><div class="empty">Selecteaza un grup</div></div>
+  </div>
+  <div class="panel" id="files-panel">
+    <h2>Fisiere</h2>
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div id="files"><div class="empty">Selecteaza un snapshot</div></div>
+  </div>
+</div>
+
+<script>
+let state = {
+  group: null, snapshot: null, mode: null,
+  archive: null, path: "/",
+  vmPath: "/", vmCrumbs: [{ name: "/", path: "/" }],
+};
+
+async function api(url) {
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "eroare necunoscuta");
+  return data;
+}
+
+function fmtSize(n) {
+  if (n === null || n === undefined) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v < 10 && i > 0 ? 1 : 0) + " " + units[i];
+}
+
+function fmtTime(unixOrSec) {
+  if (!unixOrSec) return "";
+  return new Date(unixOrSec * 1000).toLocaleString("ro-RO");
+}
+
+async function loadGroups() {
+  const el = document.getElementById("groups");
+  try {
+    const groups = await api("/api/groups");
+    if (groups.length === 0) { el.innerHTML = '<div class="empty">Niciun grup gasit</div>'; return; }
+    el.innerHTML = "";
+    groups.forEach(g => {
+      const div = document.createElement("div");
+      div.className = "item";
+      const label = g.name ? `${g.name} <span class="meta">(${g.group})</span>` : g.group;
+      const countBadge = g.backup_count ? `<span class="meta">${g.backup_count}x</span>` : "";
+      div.innerHTML = `<span>${label}</span>${countBadge}`;
+      div.title = `Ultimul backup: ${fmtTime(g.last_backup_time)} · owner: ${g.owner || "?"}`;
+      div.onclick = () => selectGroup(g.group, div);
+      el.appendChild(div);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+function selectGroup(group, elClicked) {
+  state.group = group; state.snapshot = null; state.mode = null;
+  state.archive = null; state.path = "/";
+  state.vmPath = "/"; state.vmCrumbs = [{ name: "/", path: "/" }];
+  document.querySelectorAll("#groups .item").forEach(x => x.classList.remove("active"));
+  elClicked.classList.add("active");
+  document.getElementById("files").innerHTML = '<div class="empty">Selecteaza un snapshot cu arhiva pxar</div>';
+  document.getElementById("breadcrumb").innerHTML = "";
+  loadSnapshots(group);
+}
+
+async function loadSnapshots(group) {
+  const el = document.getElementById("snapshots");
+  el.innerHTML = '<div class="loading">Se incarca...</div>';
+  try {
+    const snaps = await api("/api/snapshots?group=" + encodeURIComponent(group));
+    if (snaps.length === 0) { el.innerHTML = '<div class="empty">Niciun snapshot</div>'; return; }
+    el.innerHTML = "";
+    snaps.sort((a, b) => b.backup_time - a.backup_time).forEach(s => {
+      const div = document.createElement("div");
+      div.className = "item";
+      const verBadge = s.verification === "ok"
+        ? '<span class="badge ok">verificat</span>'
+        : s.verification ? `<span class="badge warn">${s.verification}</span>` : "";
+      const namePart = s.name ? `<span class="meta">${s.name}</span>` : "";
+      div.innerHTML = `<span>${fmtTime(s.backup_time)} ${namePart}</span>${verBadge}`;
+      div.title = [s.name, s.comment, "owner: " + (s.owner || "?"), "size: " + fmtSize(s.size)]
+        .filter(Boolean).join(" · ");
+      div.onclick = () => selectSnapshot(s, div);
+      el.appendChild(div);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+function selectSnapshot(snap, elClicked) {
+  document.querySelectorAll("#snapshots .item").forEach(x => x.classList.remove("active"));
+  elClicked.classList.add("active");
+  state.snapshot = snap.snapshot;
+  state.path = "/";
+
+  const browsable = snap.archives.filter(a => a.browsable);
+  const filesEl = document.getElementById("files");
+  if (browsable.length === 0) {
+    state.mode = null;
+    filesEl.innerHTML = '<div class="empty">Acest snapshot nu are arhive navigabile</div>';
+    document.getElementById("breadcrumb").innerHTML = "";
+    return;
+  }
+
+  // Backup-urile de VM au arhive .img.fidx (imagini de disc): nu se aleg
+  // individual, ci navigam direct din radacina snapshot-ului, care lista
+  // discurile disponibile ca prime intrari.
+  if (browsable.some(a => a.kind === "diskimage")) {
+    state.mode = "vm";
+    state.vmPath = "/";
+    state.vmCrumbs = [{ name: "/", path: "/" }];
+    loadVmFiles();
+    return;
+  }
+
+  state.mode = "pxar";
+  if (browsable.length === 1) {
+    state.archive = browsable[0].filename.replace(/\.didx$/, "");
+    loadFiles();
+  } else {
+    filesEl.innerHTML = '<div class="empty">Alege arhiva:</div>';
+    document.getElementById("breadcrumb").innerHTML = "";
+    browsable.forEach(a => {
+      const div = document.createElement("div");
+      div.className = "row";
+      div.innerHTML = `<span class="icon">&#128230;</span><span class="name">${a.filename}</span>`;
+      div.onclick = () => { state.archive = a.filename.replace(/\.didx$/, ""); state.path = "/"; loadFiles(); };
+      filesEl.appendChild(div);
+    });
+  }
+}
+
+function renderVmBreadcrumb() {
+  const el = document.getElementById("breadcrumb");
+  el.innerHTML = "";
+  state.vmCrumbs.forEach((c, i) => {
+    const span = document.createElement("span");
+    span.textContent = c.name + (i < state.vmCrumbs.length - 1 ? " / " : "");
+    span.onclick = () => {
+      state.vmCrumbs = state.vmCrumbs.slice(0, i + 1);
+      state.vmPath = c.path;
+      loadVmFiles();
+    };
+    el.appendChild(span);
+  });
+}
+
+async function loadVmFiles() {
+  const el = document.getElementById("files");
+  el.innerHTML = '<div class="loading">Se porneste VM-ul de restore / se incarca (poate dura 10-30s la prima accesare a acestui disc)...</div>';
+  renderVmBreadcrumb();
+  try {
+    const data = await api(`/api/vm-browse?snapshot=${encodeURIComponent(state.snapshot)}&path=${encodeURIComponent(state.vmPath)}`);
+    el.innerHTML = "";
+
+    if (state.vmCrumbs.length > 1) {
+      const up = document.createElement("div");
+      up.className = "row";
+      up.innerHTML = `<span class="icon">&#8617;</span><span class="name">..</span>`;
+      up.onclick = () => {
+        state.vmCrumbs = state.vmCrumbs.slice(0, -1);
+        state.vmPath = state.vmCrumbs[state.vmCrumbs.length - 1].path;
+        loadVmFiles();
+      };
+      el.appendChild(up);
+    }
+
+    if (data.entries.length === 0) {
+      el.appendChild(Object.assign(document.createElement("div"), { className: "empty", textContent: "Director gol" }));
+    }
+
+    data.entries.forEach(entry => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const icon = entry.kind === "disk" ? "&#128190;" : entry.kind === "file" ? "&#128196;" : "&#128193;";
+      const namePart = document.createElement("span");
+      namePart.className = "name";
+      namePart.innerHTML = `<span class="icon">${icon}</span> ${entry.name}`;
+      if (entry.kind !== "file") {
+        namePart.onclick = () => {
+          state.vmCrumbs.push({ name: entry.name, path: entry.path });
+          state.vmPath = entry.path;
+          loadVmFiles();
+        };
+      }
+      row.appendChild(namePart);
+
+      const sizeSpan = document.createElement("span");
+      sizeSpan.className = "size";
+      sizeSpan.textContent = fmtSize(entry.size);
+      row.appendChild(sizeSpan);
+
+      if (entry.kind !== "disk") {
+        const dlBtn = document.createElement("button");
+        dlBtn.className = "btn";
+        dlBtn.textContent = entry.kind === "dir" ? "ZIP" : "Download";
+        dlBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const url = `/api/vm-download?snapshot=${encodeURIComponent(state.snapshot)}&path=${encodeURIComponent(entry.path)}&kind=${entry.kind}&name=${encodeURIComponent(entry.name)}`;
+          window.location.href = url;
+        };
+        row.appendChild(dlBtn);
+      }
+
+      el.appendChild(row);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+function updateBreadcrumb() {
+  const el = document.getElementById("breadcrumb");
+  const parts = state.path.split("/").filter(Boolean);
+  el.innerHTML = "";
+  const rootSpan = document.createElement("span");
+  rootSpan.textContent = "/ ";
+  rootSpan.onclick = () => { state.path = "/"; loadFiles(); };
+  el.appendChild(rootSpan);
+  let acc = "";
+  parts.forEach((p, i) => {
+    acc += "/" + p;
+    const sep = document.createTextNode(i < parts.length ? "" : "");
+    const span = document.createElement("span");
+    span.textContent = p + (i < parts.length - 1 ? " / " : "");
+    const pathAtClick = acc;
+    span.onclick = () => { state.path = pathAtClick; loadFiles(); };
+    el.appendChild(span);
+  });
+}
+
+async function loadFiles() {
+  const el = document.getElementById("files");
+  el.innerHTML = '<div class="loading">Se monteaza / incarca (poate dura cateva secunde la prima accesare)...</div>';
+  updateBreadcrumb();
+  try {
+    const data = await api(`/api/browse?snapshot=${encodeURIComponent(state.snapshot)}&archive=${encodeURIComponent(state.archive)}&path=${encodeURIComponent(state.path)}`);
+    el.innerHTML = "";
+
+    if (state.path !== "/") {
+      const up = document.createElement("div");
+      up.className = "row";
+      up.innerHTML = `<span class="icon">&#8617;</span><span class="name">..</span>`;
+      up.onclick = () => {
+        const parts = state.path.split("/").filter(Boolean);
+        parts.pop();
+        state.path = "/" + parts.join("/");
+        loadFiles();
+      };
+      el.appendChild(up);
+    }
+
+    if (data.entries.length === 0) {
+      el.appendChild(Object.assign(document.createElement("div"), { className: "empty", textContent: "Director gol" }));
+    }
+
+    data.entries.forEach(entry => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const icon = entry.type === "dir" ? "&#128193;" : entry.type === "symlink" ? "&#128279;" : "&#128196;";
+      const namePart = document.createElement("span");
+      namePart.className = "name";
+      namePart.innerHTML = `<span class="icon">${icon}</span> ${entry.name}`;
+      if (entry.type === "dir") {
+        namePart.onclick = () => { state.path = (state.path === "/" ? "" : state.path) + "/" + entry.name; loadFiles(); };
+      }
+      row.appendChild(namePart);
+
+      const sizeSpan = document.createElement("span");
+      sizeSpan.className = "size";
+      sizeSpan.textContent = fmtSize(entry.size);
+      row.appendChild(sizeSpan);
+
+      const dlBtn = document.createElement("button");
+      dlBtn.className = "btn";
+      dlBtn.textContent = entry.type === "dir" ? "ZIP" : "Download";
+      dlBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        const fullPath = (state.path === "/" ? "" : state.path) + "/" + entry.name;
+        const url = `/api/download?snapshot=${encodeURIComponent(state.snapshot)}&archive=${encodeURIComponent(state.archive)}&path=${encodeURIComponent(fullPath)}`;
+        window.location.href = url;
+      };
+      row.appendChild(dlBtn);
+
+      el.appendChild(row);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+loadGroups();
+</script>
+</body>
+</html>

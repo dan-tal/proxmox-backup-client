@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  pbs-client:
+    build: .
+    container_name: pbs-client-test
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/fuse
+      - /dev/kvm
+      - /dev/vhost-vsock
+      - /dev/vhost-net
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+      - seccomp:unconfined
+    tmpfs:
+      - /tmp
+      - /root/.cache
+    environment:
+      - PBS_REPOSITORY=${PBS_REPOSITORY}
+      - PBS_PASSWORD=${PBS_PASSWORD}
+      - PBS_FINGERPRINT=${PBS_FINGERPRINT}
+      - APP_USERNAME=${APP_USERNAME:-admin}
+      - APP_PASSWORD=${APP_PASSWORD:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      - ALLOWED_GROUPS=${ALLOWED_GROUPS:-}
+    ports:
+      - "8080:8080"
