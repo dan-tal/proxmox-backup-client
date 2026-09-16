@@ -22,6 +22,7 @@
 #   bash -c "$(curl -fsSL <raw-url-catre-acest-script>)"   # complet interactiv
 #   ./setup-lxc.sh                                          # local, interactiv
 #   CTID=101 HOSTNAME=pbs-test STORAGE=local-zfs ./setup-lxc.sh   # neinteractiv
+#   VERBOSE=1 ./setup-lxc.sh                                # arata tot output-ul apt/pct
 #
 # CTID, storage-ul pentru disk si template-ul sunt fie preluate din
 # variabilele de mediu (daca sunt setate), fie cerute interactiv cu o
@@ -46,8 +47,56 @@ BRIDGE="${BRIDGE:-vmbr0}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 REPO_URL="${REPO_URL:-https://github.com/dan-tal/proxmox-backup-client.git}"
 APP_DIR="${APP_DIR:-/opt/pbs-restore}"
+VERBOSE="${VERBOSE:-0}"
 
-log() { echo -e "\n>>> $*"; }
+# --- stil vizual (fara dependente externe - doar culori ANSI) --------------
+
+if [ -t 1 ]; then
+    CL=$(printf '\033[0m'); RD=$(printf '\033[1;31m'); GN=$(printf '\033[1;32m')
+    YW=$(printf '\033[1;33m'); BL=$(printf '\033[1;34m')
+else
+    CL=""; RD=""; GN=""; YW=""; BL=""
+fi
+
+msg_info()  { echo -e " ${YW}➜${CL} $1"; }
+msg_ok()    { echo -e " ${GN}✔${CL} $1"; }
+msg_error() { echo -e " ${RD}✘${CL} $1" >&2; }
+
+header_info() {
+    echo -e "${BL}========================================================${CL}"
+    echo -e "${BL} PBS File Restore UI${CL} — setup automat LXC (privilegiat + KVM)"
+    echo -e "${BL}========================================================${CL}"
+}
+
+# Ruleaza o comanda ascunzandu-i output-ul (ca sa nu ingroape mesajele
+# msg_info/msg_ok in sute de linii de apt), doar cu un mesaj de
+# info/ok/error in jurul ei. Cu VERBOSE=1 arata tot output-ul, la fel ca
+# inainte. La eroare arata oricum ultimele linii din log, ca sa se
+# inteleaga ce a picat (ex: OOM killer, pachet lipsa etc.).
+run_step() {
+    local desc="$1"; shift
+    msg_info "$desc..."
+    local logfile
+    logfile=$(mktemp)
+    if [ "$VERBOSE" = "1" ]; then
+        if "$@" 2>&1 | tee "$logfile"; then
+            msg_ok "$desc"; rm -f "$logfile"
+        else
+            msg_error "$desc a esuat"; rm -f "$logfile"; exit 1
+        fi
+    else
+        if "$@" >"$logfile" 2>&1; then
+            msg_ok "$desc"; rm -f "$logfile"
+        else
+            msg_error "$desc a esuat - ultimele linii de output:"
+            tail -n 40 "$logfile" >&2
+            rm -f "$logfile"
+            exit 1
+        fi
+    fi
+}
+
+header_info
 
 # Intreaba interactiv (cu valoare implicita) doar daca stdin e un terminal
 # real - cazul "bash -c "$(curl ...)"". Cand scriptul ruleaza neinteractiv
@@ -72,18 +121,18 @@ select_storage() {
     local stores
     mapfile -t stores < <(pvesm status --content "$content" 2>/dev/null | awk 'NR>1{print $1}')
     if [ "${#stores[@]}" -eq 0 ]; then
-        echo "Nicio stocare cu content=$content gasita pe acest nod." >&2
+        msg_error "Nicio stocare cu content=$content gasita pe acest nod."
         exit 1
     fi
     if [ "${#stores[@]}" -eq 1 ] || [ ! -t 0 ]; then
         echo "${stores[0]}"
         return
     fi
-    echo "Stocari disponibile pentru $label:" >&2
+    echo -e " ${YW}Stocari disponibile pentru ${label}:${CL}" >&2
     local i=1
-    for s in "${stores[@]}"; do echo "  $i) $s" >&2; i=$((i + 1)); done
+    for s in "${stores[@]}"; do echo "   $i) $s" >&2; i=$((i + 1)); done
     local choice
-    read -rp "Alege [1]: " choice </dev/tty || true
+    read -rp " Alege [1]: " choice </dev/tty || true
     choice="${choice:-1}"
     echo "${stores[$((choice - 1))]}"
 }
@@ -100,18 +149,19 @@ find_or_download_template() {
         return
     fi
 
-    echo "Niciun template Debian gasit local pe storage '$TEMPLATE_STORAGE' - caut unul disponibil..." >&2
-    pveam update >&2
+    msg_info "Niciun template Debian local pe storage '$TEMPLATE_STORAGE' - caut unul disponibil..." >&2
+    pveam update >/dev/null 2>&1 || true
     local avail
     avail=$(pveam available --section system 2>/dev/null \
         | awk '$2 ~ /debian-[0-9]+-standard.*amd64\.tar\.zst$/ {print $2}' \
         | sort -V | tail -1)
     if [ -z "$avail" ]; then
-        echo "Nu am gasit niciun template Debian in repo-urile Proxmox configurate." >&2
+        msg_error "Nu am gasit niciun template Debian in repo-urile Proxmox configurate."
         exit 1
     fi
-    echo "Descarc $avail pe storage '$TEMPLATE_STORAGE'..." >&2
+    msg_info "Descarc $avail pe storage '$TEMPLATE_STORAGE'..." >&2
     pveam download "$TEMPLATE_STORAGE" "$avail" >&2
+    msg_ok "Template descarcat: $avail" >&2
     echo "${TEMPLATE_STORAGE}:vztmpl/${avail}"
 }
 
@@ -119,18 +169,18 @@ DEFAULT_CTID=$(pvesh get /cluster/nextid 2>/dev/null || echo 100)
 CTID="${CTID:-$(ask "ID container LXC" "$DEFAULT_CTID")}"
 
 STORAGE="${STORAGE:-$(select_storage rootdir "disk-ul containerului")}"
-log "Storage disk container: $STORAGE"
+msg_ok "Storage disk container: $STORAGE"
 
 TEMPLATE="${TEMPLATE:-$(find_or_download_template)}"
-log "Template: $TEMPLATE"
+msg_ok "Template: $TEMPLATE"
 
 # --- 1. LXC-ul ------------------------------------------------------------
 
 if pct status "$CTID" &>/dev/null; then
-    log "CTID $CTID exista deja, sar peste pct create."
+    msg_ok "CTID $CTID exista deja, sar peste pct create."
 else
-    log "Creez LXC $CTID ($HOSTNAME, privilegiat, nesting=1)..."
-    pct create "$CTID" "$TEMPLATE" \
+    run_step "Creez LXC $CTID ($HOSTNAME, privilegiat, nesting=1, ${MEMORY}MB RAM)" \
+        pct create "$CTID" "$TEMPLATE" \
         --hostname "$HOSTNAME" \
         --cores "$CORES" \
         --memory "$MEMORY" \
@@ -148,19 +198,18 @@ CONF="/etc/pve/lxc/${CTID}.conf"
 
 device_majmin() {
     local dev="$1"
-    [ -e "$dev" ] || { echo "LIPSA: $dev nu exista pe host" >&2; return 1; }
+    [ -e "$dev" ] || { msg_error "$dev nu exista pe host"; return 1; }
     local t T
     t=$(stat -c '%t' "$dev")
     T=$(stat -c '%T' "$dev")
     echo "$((16#$t)):$((16#$T))"
 }
 
-log "Calculez major:minor reale pentru devices..."
 KVM_MAJMIN=$(device_majmin /dev/kvm)
 VHOST_NET_MAJMIN=$(device_majmin /dev/vhost-net)
 VHOST_VSOCK_MAJMIN=$(device_majmin /dev/vhost-vsock)
 FUSE_MAJMIN=$(device_majmin /dev/fuse)
-echo "kvm=$KVM_MAJMIN vhost-net=$VHOST_NET_MAJMIN vhost-vsock=$VHOST_VSOCK_MAJMIN fuse=$FUSE_MAJMIN"
+msg_ok "Devices detectate: kvm=$KVM_MAJMIN vhost-net=$VHOST_NET_MAJMIN vhost-vsock=$VHOST_VSOCK_MAJMIN fuse=$FUSE_MAJMIN"
 
 # Curat orice bloc de passthrough adaugat anterior (idempotent), apoi il
 # reinserez ÎNAINTE de orice sectiune de snapshot ("[nume]") - daca ar
@@ -182,26 +231,29 @@ if grep -q '^\[' "$CONF"; then
 else
     printf '%s\n' "$DEVICE_BLOCK" >> "$CONF"
 fi
+msg_ok "Device passthrough configurat in $CONF"
 
-log "Pornesc containerul..."
-pct start "$CTID"
+run_step "Pornesc containerul" pct start "$CTID"
 
-log "Astept rețea in container..."
+msg_info "Astept rețea in container..."
 for i in $(seq 1 30); do
     pct exec "$CTID" -- getent hosts deb.debian.org &>/dev/null && break
     sleep 1
 done
+msg_ok "Retea disponibila in container"
 
 # --- 3. Verificare KVM real -------------------------------------------------
 
-log "Verific acceleratia KVM in container (kvm-ok)..."
-pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y -qq cpu-checker >/dev/null && kvm-ok" \
-    || { echo "!!! kvm-ok a esuat - vezi README.md sectiunea 'De ce nu Docker' pentru diagnostic (nested-virt dezactivata?)." >&2; exit 1; }
+# run_step iese din script cu exit 1 si arata log-ul daca esueaza - daca
+# vezi eroarea asta, vezi README.md sectiunea "De ce nu Docker" (posibil
+# nested-virt dezactivata pe host).
+run_step "Verific acceleratia KVM in container (kvm-ok)" \
+    pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y -qq cpu-checker >/dev/null && kvm-ok"
 
 # --- 4. Pachete client Proxmox Backup + git --------------------------------
 
-log "Instalez pachetele client Proxmox Backup + git..."
-pct exec "$CTID" -- bash -c '
+run_step "Instalez pachetele client Proxmox Backup + git (poate dura cateva minute)" \
+    pct exec "$CTID" -- bash -c '
 set -euo pipefail
 apt-get install -y -qq curl gnupg ca-certificates fuse3 git python3-flask
 
@@ -222,8 +274,8 @@ mkdir -p /mnt/pbs_mounts /var/tmp/pbs-restore
 
 # --- 5. Clone / update aplicatie -------------------------------------------
 
-log "Clonez/actualizez $REPO_URL in $APP_DIR..."
-pct exec "$CTID" -- bash -c "
+run_step "Clonez/actualizez $REPO_URL in $APP_DIR" \
+    pct exec "$CTID" -- bash -c "
 if [ -d '${APP_DIR}/.git' ]; then
     cd '${APP_DIR}' && git pull
 else
@@ -233,8 +285,8 @@ fi
 
 # --- 6. Serviciu systemd ----------------------------------------------------
 
-log "Configurez serviciul systemd pbs-restore..."
-pct exec "$CTID" -- bash -c "cat > /etc/systemd/system/pbs-restore.service <<'UNIT'
+run_step "Configurez serviciul systemd pbs-restore" \
+    pct exec "$CTID" -- bash -c "cat > /etc/systemd/system/pbs-restore.service <<'UNIT'
 [Unit]
 Description=PBS File Restore UI
 After=network-online.target
@@ -259,5 +311,9 @@ systemctl enable --now pbs-restore
 systemctl restart pbs-restore"
 
 IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
-log "Gata. Interfata: http://${IP}:8080"
-log "Configureaza conexiunea la PBS din interfata web (iconul de setari)."
+echo
+echo -e "${BL}========================================================${CL}"
+msg_ok "Setup complet!"
+echo -e " Interfata:  ${GN}http://${IP}:8080${CL}"
+echo -e " Urmator pas: configureaza conexiunea la PBS din interfata web (iconul de setari)."
+echo -e "${BL}========================================================${CL}"

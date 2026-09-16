@@ -44,27 +44,37 @@ singur nivel de virtualizare, la fel ca file-restore-ul nativ din PVE.
 ## Instalare automată (recomandat)
 
 `scripts/setup-lxc.sh` automatizează toți pașii de mai jos într-un singur
-script — creează LXC-ul, configurează device passthrough (calculează
-major:minor reale de pe host, nu hardcodate), verifică `kvm-ok`, instalează
-pachetele client, clonează repo-ul și pornește serviciul systemd. Idempotent
-— poți re-rula după o eroare, sare peste ce e deja făcut.
+script, în stilul celor de la
+[community-scripts.org](https://community-scripts.org/) — creează LXC-ul,
+configurează device passthrough (calculează major:minor reale de pe host,
+nu hardcodate), verifică `kvm-ok`, instalează pachetele client, clonează
+repo-ul și pornește serviciul systemd. Idempotent — poți re-rula după o
+eroare, sare peste ce e deja făcut.
 
-Rulează **pe nodul Proxmox** (ca root), cu un template Debian deja
-descărcat local (`pveam list local`):
+Rulează **pe nodul Proxmox** (ca root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dan-tal/proxmox-backup-client/master/scripts/setup-lxc.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dan-tal/proxmox-backup-client/master/scripts/setup-lxc.sh)"
 ```
 
-Sau, dacă ai deja repo-ul clonat pe host:
+Important: forma `bash -c "$(curl ...)"`, nu `curl | bash` — doar așa rămâne
+terminalul conectat la `stdin`, ca să funcționeze prompt-urile interactive
+(ID-ul containerului, storage-ul pentru disk dacă ai mai multe). Template-ul
+Debian nu trebuie descărcat în prealabil — dacă nu găsește unul local,
+scriptul află singur cea mai nouă versiune disponibilă și o descarcă.
+
+Sau, dacă ai deja repo-ul clonat pe host, neinteractiv (util și pentru
+re-rulări automate):
 
 ```bash
 CTID=100 HOSTNAME=pbs-restore ./scripts/setup-lxc.sh
 ```
 
-Variabile disponibile (toate opționale, cu valori implicite rezonabile):
-`CTID`, `HOSTNAME`, `TEMPLATE`, `STORAGE`, `DISK_SIZE`, `CORES`, `MEMORY`,
-`SWAP`, `BRIDGE`, `REPO_URL`, `APP_DIR`.
+Variabile disponibile (toate opționale — sar peste prompt dacă sunt setate):
+`CTID`, `HOSTNAME`, `TEMPLATE`, `TEMPLATE_STORAGE`, `STORAGE`, `DISK_SIZE`,
+`CORES`, `MEMORY`, `SWAP`, `BRIDGE`, `REPO_URL`, `APP_DIR`. Adaugă `VERBOSE=1`
+ca să vezi output-ul complet al `apt`/`pct` în loc de rezumatul scurt
+(util la depanare).
 
 La final, scriptul afișează adresa `http://<ip-lxc>:8080` — deschide-o și
 configurează conexiunea la PBS din interfața web.
