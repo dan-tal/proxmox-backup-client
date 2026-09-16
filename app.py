@@ -32,9 +32,8 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
 
-from flask import Flask, jsonify, request, send_file, abort, Response, session
+from flask import Flask, jsonify, request, send_file, abort, session
 from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
@@ -102,9 +101,23 @@ MOUNT_WAIT_TIMEOUT = 20  # secunde de asteptare ca mount-ul sa devina activ
 FILE_RESTORE_TIMEOUT = 300  # primul apel pe un snapshot VM boot-eaza micro-VM-ul
 VM_CHECK_ACCESS_TIMEOUT = 20  # doar pt /api/vm-check-access: raspuns rapid de diagnostic
 RESTORE_VM_MAX_AGE = 8 * 60  # secunde; peste varsta asta, VM-ul de restore e considerat orfan
+DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
 _lock = threading.Lock()
+
+# Fallback pt cazul in care proxmox-file-restore esueaza la extragere (bug
+# confirmat pe unele fisiere - vezi README). Mapeaza discul intreg cu
+# 'proxmox-backup-client map' si monteaza direct partitia NTFS cu ntfs-3g,
+# citind ca driver de filesystem normal de pe host, nu prin micro-VM-ul
+# izolat al file-restore-ului. NU ajuta la fisiere deduplicate Windows
+# Server (Data Deduplication) - acelea nu au date reale in backup, vezi README.
+DISK_MOUNT_ROOT = Path("/mnt/pbs_disk_mounts")
+DISK_MOUNT_ROOT.mkdir(parents=True, exist_ok=True)
+
+_disk_maps = {}  # key: (snapshot, archive) -> {"loop_dev", "partition_loops": {p: dev}, "mounts": {p: Path}, "last_used"}
+_disk_map_lock = threading.Lock()
+DISK_MAP_RE = re.compile(r"mapped on (/dev/loop\d+)")
 
 
 def run_pbs_json(args):
@@ -293,6 +306,109 @@ def unmount(key):
         pass
 
 
+def parse_vm_disk_path(raw):
+    """raw = bytes decodate din require_vm_path, ex:
+    b'drive-scsi0.img.fidx/part/2/Shares/s/COMUN/fisier.pdf'.
+    Intoarce (archive, partition, fs_path) sau None daca structura nu
+    corespunde (disc fara tabela de partitii recunoscuta etc.)."""
+    parts = raw.decode(errors="replace").split("/", 3)
+    if len(parts) < 4 or parts[1] != "part":
+        return None
+    archive, _, partition, fs_path = parts
+    return archive, partition, fs_path
+
+
+def unmap_disk(key):
+    """Ca unmount(): apelat doar cat timp _disk_map_lock e detinut de caller."""
+    entry = _disk_maps.pop(key, None)
+    if entry is None:
+        return
+    for target in entry["mounts"].values():
+        subprocess.run(["umount", str(target)], capture_output=True)
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+    for part_dev in entry["partition_loops"].values():
+        subprocess.run(["losetup", "-d", part_dev], capture_output=True)
+    if entry.get("loop_dev"):
+        subprocess.run(["proxmox-backup-client", "unmap", entry["loop_dev"]], capture_output=True, env=pbs_env())
+
+
+def get_disk_partition_mount(snapshot, archive, partition):
+    """Mapeaza discul cu 'proxmox-backup-client map', citeste offset-ul
+    partitiei din /sys/block (kernelul face partition-scan automat pe
+    discul mapat), ataseaza un loop device separat exact pe acel interval
+    de bytes - evita nevoia de device-uri blkext dinamice, care nu pot fi
+    trecute predictibil in LXC - si monteaza cu ntfs-3g read-only."""
+    key = (snapshot, archive)
+    with _disk_map_lock:
+        entry = _disk_maps.get(key)
+        if entry is None:
+            entry = {"loop_dev": None, "partition_loops": {}, "mounts": {}, "last_used": time.time()}
+            _disk_maps[key] = entry
+        entry["last_used"] = time.time()
+
+        if entry["loop_dev"] is None:
+            try:
+                result = subprocess.run(
+                    ["proxmox-backup-client", "map", snapshot, archive],
+                    capture_output=True, text=True, env=pbs_env(), timeout=DISK_MAP_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                del _disk_maps[key]
+                raise RuntimeError(f"proxmox-backup-client map nu a raspuns in {DISK_MAP_TIMEOUT}s") from None
+            if result.returncode != 0:
+                del _disk_maps[key]
+                raise RuntimeError(result.stderr.strip() or "proxmox-backup-client map a esuat")
+            m = DISK_MAP_RE.search(result.stdout)
+            if not m:
+                del _disk_maps[key]
+                raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {result.stdout.strip()}")
+            entry["loop_dev"] = m.group(1)
+
+        if partition not in entry["mounts"]:
+            loop_name = entry["loop_dev"].rsplit("/", 1)[-1]
+            sys_part = Path(f"/sys/block/{loop_name}/{loop_name}p{partition}")
+            try:
+                start = int((sys_part / "start").read_text())
+                size = int((sys_part / "size").read_text())
+            except (OSError, ValueError):
+                raise RuntimeError(
+                    f"partitia {partition} nu exista pe {entry['loop_dev']} "
+                    "(disc fara tabela de partitii recunoscuta?)"
+                )
+
+            free = subprocess.run(["losetup", "-f"], capture_output=True, text=True)
+            if free.returncode != 0 or not free.stdout.strip():
+                raise RuntimeError("nu am gasit un loop device liber (vezi README - passthrough loop devices)")
+            part_dev = free.stdout.strip()
+
+            result = subprocess.run(
+                ["losetup", "-o", str(start * 512), "--sizelimit", str(size * 512), part_dev, entry["loop_dev"]],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or f"losetup pe partitia {partition} a esuat")
+            entry["partition_loops"][partition] = part_dev
+
+            safe_name = f"{snapshot}_{archive}_{partition}".replace("/", "_").replace(":", "_")
+            target = DISK_MOUNT_ROOT / safe_name
+            target.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(["ntfs-3g", "-o", "ro", part_dev, str(target)], capture_output=True, text=True)
+            if result.returncode != 0:
+                subprocess.run(["losetup", "-d", part_dev], capture_output=True)
+                del entry["partition_loops"][partition]
+                try:
+                    target.rmdir()
+                except OSError:
+                    pass
+                raise RuntimeError(result.stderr.strip() or f"mount {part_dev} a esuat")
+            entry["mounts"][partition] = target
+
+        return entry["mounts"][partition]
+
+
 def _process_age(pid):
     """Varsta unui proces in secunde, citita din /proc (fara dependente externe)."""
     with open("/proc/uptime") as f:
@@ -379,6 +495,10 @@ def cleanup_loop():
             stale = [k for k, v in _mounts.items() if now - v["last_used"] > MOUNT_IDLE_TIMEOUT]
             for k in stale:
                 unmount(k)
+        with _disk_map_lock:
+            stale_disks = [k for k, v in _disk_maps.items() if now - v["last_used"] > MOUNT_IDLE_TIMEOUT]
+            for k in stale_disks:
+                unmap_disk(k)
         reap_stale_restore_vms()
 
 
@@ -769,51 +889,64 @@ def api_vm_download():
         download_name += ".zip"
 
     fmt = "zip" if is_dir else "plain"
-    # stderr in fisier, nu PIPE: un pipe necitit se poate umple si bloca procesul.
-    stderr_file = tempfile.TemporaryFile()
-    proc = subprocess.Popen(
-        ["proxmox-file-restore", "extract", snapshot, path, "-",
+    workdir = Path(tempfile.mkdtemp(dir=RESTORE_TMP))
+    out_path = workdir / ("archive.zip" if is_dir else "file.bin")
+
+    # Extragem intai local (nu la stdout) ca sa putem detecta un esec
+    # complet inainte sa trimitem vreun byte clientului, si sa incercam
+    # fallback-ul de mai jos fara sa fi trimis deja un status 200.
+    result = subprocess.run(
+        ["proxmox-file-restore", "extract", snapshot, path, str(out_path),
          "--format", fmt, "--base64", "true"],
-        stdout=subprocess.PIPE, stderr=stderr_file, env=pbs_env(),
+        capture_output=True, text=True, env=pbs_env(),
+    )
+    primary_err = result.stderr.strip()
+    if result.returncode == 0 and not primary_err and out_path.exists():
+        return send_and_cleanup(out_path, download_name, workdir)
+
+    shutil.rmtree(workdir, ignore_errors=True)
+    print(
+        f"[vm-download] extragere normala esuata pentru {snapshot} path={path}, "
+        f"incerc fallback prin montare directa: {primary_err or '(fara stderr, iesire absenta)'}",
+        flush=True,
     )
 
-    # Citim primul chunk inainte de a trimite raspunsul, ca sa putem
-    # raporta o eroare (ex: VM de restore care nu a pornit) ca JSON 502
-    # in loc de un fisier trunchiat cu status 200.
-    first_chunk = proc.stdout.read(65536)
-    if not first_chunk:
-        returncode = proc.wait()
-        stderr_file.seek(0)
-        err = stderr_file.read().decode(errors="replace").strip()
-        stderr_file.close()
-        # returncode 0 + iesire goala + stderr nevid = extragere esuata silentios
-        # (vazut la fisiere cu nume ce contin diacritice - vezi README, troubleshooting).
-        if returncode != 0 or err:
-            return jsonify({"error": err or "eroare la extragere din imaginea de disc"}), 502
+    # Fallback: proxmox-file-restore poate esua la extragerea unor fisiere
+    # (bug confirmat, vezi README). Incercam sa montam direct partitia NTFS
+    # si sa citim fisierul de acolo, ca un driver de filesystem normal.
+    parsed = parse_vm_disk_path(raw)
+    if parsed is None:
+        return jsonify({"error": primary_err or "eroare la extragere din imaginea de disc"}), 502
 
-    def generate():
-        try:
-            yield first_chunk
-            while chunk := proc.stdout.read(65536):
-                yield chunk
-        finally:
-            if proc.poll() is None:
-                proc.kill()  # clientul a abandonat download-ul
-            rc = proc.wait()
-            # esec la mijlocul stream-ului (dupa ce am trimis deja status 200) -
-            # clientul primeste un fisier/zip trunchiat fara nicio eroare vizibila;
-            # logam macar aici ca sa se vada in jurnal (vezi README, troubleshooting:
-            # nume cu diacritice pot bloca extragerea, atat individual cat si in zip).
-            if rc != 0:
-                stderr_file.seek(0)
-                err = stderr_file.read().decode(errors="replace").strip()
-                print(f"[vm-download] esuat la mijlocul stream-ului (rc={rc}) pt {snapshot} path={path}: {err}", flush=True)
-            stderr_file.close()
+    archive, partition, fs_path = parsed
+    try:
+        mount_path = get_disk_partition_mount(snapshot, archive, partition)
+    except RuntimeError as e:
+        return jsonify({
+            "error": f"{primary_err or 'extragere esuata'}; fallback (montare directa) a esuat si el: {e}",
+        }), 502
 
-    mimetype = "application/zip" if is_dir else "application/octet-stream"
-    return Response(generate(), mimetype=mimetype, headers={
-        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(download_name)}",
-    })
+    raw_target = mount_path / fs_path.lstrip("/")
+    if raw_target.is_symlink() and not raw_target.exists():
+        return jsonify({
+            "error": "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
+                     "deduplicare Windows Server / Data Deduplication) - continutul real nu e in "
+                     "backup, nu poate fi recuperat de aici. Vezi README, Troubleshooting.",
+        }), 409
+
+    target = safe_join(mount_path, fs_path)
+    if not target.exists():
+        return jsonify({
+            "error": f"{primary_err or 'extragere esuata'}; fallback: calea nu a fost gasita dupa montare directa",
+        }), 404
+
+    if is_dir:
+        fb_workdir = Path(tempfile.mkdtemp(dir=RESTORE_TMP))
+        zip_path = fb_workdir / "archive.zip"
+        zip_directory(target, zip_path)
+        return send_and_cleanup(zip_path, download_name, fb_workdir)
+
+    return send_file(target, as_attachment=True, download_name=download_name)
 
 
 @app.route("/")

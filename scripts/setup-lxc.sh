@@ -211,6 +211,18 @@ VHOST_VSOCK_MAJMIN=$(device_majmin /dev/vhost-vsock)
 FUSE_MAJMIN=$(device_majmin /dev/fuse)
 msg_ok "Devices detectate: kvm=$KVM_MAJMIN vhost-net=$VHOST_NET_MAJMIN vhost-vsock=$VHOST_VSOCK_MAJMIN fuse=$FUSE_MAJMIN"
 
+# loop-control + un interval de /dev/loopN: fallback pt cazul in care
+# proxmox-file-restore esueaza la extragere (vezi README) - mapam discul
+# intreg cu 'proxmox-backup-client map' si montam direct partitia NTFS.
+# /dev/loopN nu exista implicit pe host decat cand e alocat efectiv - le
+# creez explicit (idempotent), altfel bind-mount-ul din container esueaza.
+LOOP_RANGE=64
+for i in $(seq 0 $((LOOP_RANGE - 1))); do
+    [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i"
+done
+LOOP_CONTROL_MAJMIN=$(device_majmin /dev/loop-control)
+msg_ok "Devices loop detectate: loop-control=$LOOP_CONTROL_MAJMIN, loop0-$((LOOP_RANGE - 1)) pregatite"
+
 # Curat orice bloc de passthrough adaugat anterior (idempotent), apoi il
 # reinserez ÎNAINTE de orice sectiune de snapshot ("[nume]") - daca ar
 # ajunge dupa, Proxmox l-ar atribui snapshot-ului, nu config-ului live.
@@ -223,7 +235,14 @@ lxc.mount.entry: /dev/vhost-net dev/vhost-net none bind,optional,create=file
 lxc.cgroup2.devices.allow: c ${VHOST_VSOCK_MAJMIN} rwm
 lxc.mount.entry: /dev/vhost-vsock dev/vhost-vsock none bind,optional,create=file
 lxc.cgroup2.devices.allow: c ${FUSE_MAJMIN} rwm
-lxc.mount.entry: /dev/fuse dev/fuse none bind,optional,create=file"
+lxc.mount.entry: /dev/fuse dev/fuse none bind,optional,create=file
+lxc.cgroup2.devices.allow: c ${LOOP_CONTROL_MAJMIN} rwm
+lxc.mount.entry: /dev/loop-control dev/loop-control none bind,optional,create=file
+lxc.cgroup2.devices.allow: b 7:* rwm"
+for i in $(seq 0 $((LOOP_RANGE - 1))); do
+    DEVICE_BLOCK="${DEVICE_BLOCK}
+lxc.mount.entry: /dev/loop$i dev/loop$i none bind,optional,create=file"
+done
 
 if grep -q '^\[' "$CONF"; then
     # exista o sectiune de snapshot - insereaza inaintea primei linii "[...]"
@@ -255,7 +274,7 @@ run_step "Verific acceleratia KVM in container (kvm-ok)" \
 run_step "Instalez pachetele client Proxmox Backup + git (poate dura cateva minute)" \
     pct exec "$CTID" -- bash -c '
 set -euo pipefail
-apt-get install -y -qq curl gnupg ca-certificates fuse3 git python3-flask
+apt-get install -y -qq curl gnupg ca-certificates fuse3 git python3-flask ntfs-3g
 
 curl -fsSL https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg \
     -o /etc/apt/trusted.gpg.d/proxmox-release-trixie.gpg

@@ -112,31 +112,52 @@ pct create 100 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
 pe un container existent — dacă ai nevoie să convertești unul deja creat,
 cel mai simplu e `pct destroy` + recreare (nu se poate cu `pct set`).
 
-### 2. Device passthrough pentru KVM/vsock
+### 2. Device passthrough pentru KVM/vsock + loop devices
 
 Aflat mai întâi numerele major:minor reale ale device-urilor de pe host
 (pot diferi de la un sistem la altul):
 
 ```bash
-ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse
+ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse /dev/loop-control
+```
+
+`/dev/loop0`...`/dev/loop63` nu există implicit pe host decât după ce sunt
+alocate efectiv — creează-le explicit (idempotent), altfel bind-mount-ul
+din container eșuează:
+
+```bash
+for i in $(seq 0 63); do [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i"; done
 ```
 
 Adaugă-le în config-ul LXC-ului (înlocuiește minor-ele dacă diferă de mai
 jos; la noi au fost `kvm=232`, `vhost-net=238`, `vhost-vsock=241`,
-`fuse=229`):
+`fuse=229`, `loop-control=237`):
 
 ```bash
-cat <<'CONF' >> /etc/pve/lxc/100.conf
-lxc.cgroup2.devices.allow: c 10:232 rwm
-lxc.mount.entry: /dev/kvm dev/kvm none bind,optional,create=file
-lxc.cgroup2.devices.allow: c 10:238 rwm
-lxc.mount.entry: /dev/vhost-net dev/vhost-net none bind,optional,create=file
-lxc.cgroup2.devices.allow: c 10:241 rwm
-lxc.mount.entry: /dev/vhost-vsock dev/vhost-vsock none bind,optional,create=file
-lxc.cgroup2.devices.allow: c 10:229 rwm
-lxc.mount.entry: /dev/fuse dev/fuse none bind,optional,create=file
-CONF
+{
+  echo "lxc.cgroup2.devices.allow: c 10:232 rwm"
+  echo "lxc.mount.entry: /dev/kvm dev/kvm none bind,optional,create=file"
+  echo "lxc.cgroup2.devices.allow: c 10:238 rwm"
+  echo "lxc.mount.entry: /dev/vhost-net dev/vhost-net none bind,optional,create=file"
+  echo "lxc.cgroup2.devices.allow: c 10:241 rwm"
+  echo "lxc.mount.entry: /dev/vhost-vsock dev/vhost-vsock none bind,optional,create=file"
+  echo "lxc.cgroup2.devices.allow: c 10:229 rwm"
+  echo "lxc.mount.entry: /dev/fuse dev/fuse none bind,optional,create=file"
+  echo "lxc.cgroup2.devices.allow: c 10:237 rwm"
+  echo "lxc.mount.entry: /dev/loop-control dev/loop-control none bind,optional,create=file"
+  echo "lxc.cgroup2.devices.allow: b 7:* rwm"
+  for i in $(seq 0 63); do
+    echo "lxc.mount.entry: /dev/loop$i dev/loop$i none bind,optional,create=file"
+  done
+} >> /etc/pve/lxc/100.conf
 ```
+
+`loop-control` + `loop0-63` sunt folosite de fallback-ul de descărcare
+(vezi Troubleshooting): dacă `proxmox-file-restore` eșuează la extragerea
+unui fișier, aplicația mapează discul cu `proxmox-backup-client map` și
+montează direct partiția NTFS cu `ntfs-3g`, fără să treacă prin micro-VM-ul
+izolat. Major-ul 7 (loop) e wildcard-at pentru că indexul e alocat dinamic
+de kernel, nu poate fi prezis dinainte.
 
 > **Atenție**: dacă LXC-ul are deja o secțiune de snapshot în fișierul de
 > config (ex. `[nume-snapshot]`), liniile adăugate cu `>>` trebuie să fie
@@ -154,7 +175,7 @@ pct enter 100
 **În container:**
 
 ```bash
-ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse   # toate 4 trebuie sa apara
+ls -la /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/fuse /dev/loop-control /dev/loop9
 apt-get update && apt-get install -y cpu-checker && kvm-ok  # trebuie: "KVM acceleration can be used"
 ```
 
@@ -169,7 +190,7 @@ cat /sys/module/kvm_intel/parameters/nested   # sau kvm_amd
 ### 3. Instalează pachetele client PBS (în container)
 
 ```bash
-apt-get install -y curl gnupg ca-certificates fuse3 git
+apt-get install -y curl gnupg ca-certificates fuse3 git ntfs-3g
 
 curl -fsSL https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg \
     -o /etc/apt/trusted.gpg.d/proxmox-release-trixie.gpg
@@ -309,7 +330,7 @@ frontend/dist/           build-ul compilat, servit static de Flask (comitat in g
 |---|---|
 | `GET /api/groups`, `/api/snapshots` | listare grupuri/snapshot-uri PBS |
 | `GET /api/browse`, `/api/download` | browsing/download arhive `.pxar` (CT) |
-| `GET /api/vm-browse`, `/api/vm-download` | browsing/download disc VM, via `proxmox-file-restore` |
+| `GET /api/vm-browse`, `/api/vm-download` | browsing/download disc VM, via `proxmox-file-restore`; `vm-download` are fallback automat prin montare directă (map + ntfs-3g) dacă extragerea normală eșuează |
 | `GET /api/vm-check-access` | test rapid (timeout 20s) — confirmă dacă micro-VM-ul de restore poate porni, cu diagnostic detaliat (devices KVM/vsock, VM-uri orfane) dacă eșuează |
 | `GET/POST /api/pbs-config` | citire/salvare conexiune PBS, testată live la salvare |
 
@@ -326,28 +347,32 @@ frontend/dist/           build-ul compilat, servit static de Flask (comitat in g
   pentru nivelurile mai adânci de root).
 - **`kvm-ok` spune că nu poate accelera** → vezi secțiunea 2 de mai sus
   (nested-virt dezactivată pe host, dacă host-ul Proxmox e el însuși o VM).
-- **Fișier/folder cu nume ce conțin diacritice se descarcă trunchiat sau cu
-  0 bytes** (deși apare corect în listare, cu mărimea reală) → **bug confirmat
-  în `proxmox-file-restore` însuși**, nu în aplicația asta. Reprodus izolat,
-  direct din linia de comandă, în afara aplicației:
-  ```bash
-  proxmox-file-restore extract <snapshot> <path-base64> /tmp/out.pdf --format plain --base64 true
-  # error extracting /nume cu diacritice.pdf: extracted 0 bytes of a file of NNNN bytes
-  # error extracting pxar archive: unexpected EOF
-  ```
-  Micro-VM-ul de restore citește corect metadatele (nume, mărime), dar
-  eșuează la citirea conținutului de pe NTFS pentru fișierele cu nume
-  non-ASCII. La extragere ZIP a unui folder, primul fișier "problematic"
-  întâlnit oprește toată extragerea (nu doar el e omis) — deci un folder cu
-  măcar un fișier cu diacritice devine netransferabil ca ZIP.
-  `LANG`/`LC_ALL` pe host **nu ajută** — micro-VM-ul de restore are propriul
-  kernel/rootfs, izolat, și nu moștenește variabilele de mediu ale
-  serviciului `pbs-restore`. Foarte probabil afectează și File Restore-ul
-  nativ din GUI-ul PVE, pentru că folosește același binar pe dedesubt.
-  Aplicația acum detectează eșecul și întoarce o eroare clară (502) în loc
-  de un fișier fals de 0 bytes pentru descărcări unde eroarea apare de la
-  început; pentru eșecuri la mijlocul unui stream ZIP (fișier deja parțial
-  trimis către client), vezi `journalctl -u pbs-restore` pentru mesajul
-  `[vm-download] esuat la mijlocul stream-ului...`. Nu există un workaround
-  cunoscut la nivel de aplicație — merită raportat la Proxmox
-  (bugzilla.proxmox.com), cu pașii de reproducere de mai sus.
+- **Descărcare din disc VM eșuează cu 0 bytes prin `proxmox-file-restore`** →
+  bug confirmat în `proxmox-file-restore` însuși pentru unele fișiere
+  (reprodus izolat, direct din linia de comandă, în afara aplicației: exit
+  255, `error extracting pxar archive: unexpected EOF`). **Nu ține de nume
+  cu diacritice** — asta a fost o coincidență inițială; cauza reală, în
+  cazurile investigate, a fost că fișierele erau **reparse point-uri NTFS
+  de Data Deduplication** (Windows Server "Data Deduplication" feature,
+  reparse tag `0x80000013` = `IO_REPARSE_TAG_DEDUP`) — datele reale sunt
+  stocate deduplicate în `System Volume Information\Dedup\ChunkStore\`, nu
+  în `$DATA` normal, și niciun tool Linux (inclusiv `ntfs-3g`) nu poate
+  reasambla formatul ăsta proprietar; doar Windows, cu rolul de
+  Deduplicare instalat, poate citi fișierul corect.
+
+  Aplicația face automat un **fallback**: dacă `proxmox-file-restore`
+  eșuează, mapează discul întreg cu `proxmox-backup-client map`, citește
+  offset-ul partiției din `/sys/block` și montează direct partiția NTFS cu
+  `ntfs-3g` (citire ca filesystem normal de pe host, nu prin micro-VM-ul
+  izolat). Asta rezolvă eșecurile reale de extragere (orice altă cauză
+  decât deduplicarea), dar **nu poate recupera fișiere deduplicate** — pentru
+  ele, aplicația detectează reparse point-ul și întoarce direct un mesaj
+  clar (409), nu un fișier fals. Pentru fișiere deduplicate, singura
+  soluție e atașarea discului la o VM Windows Server cu Data Deduplication
+  instalat și copierea normală de acolo (Windows reasamblează transparent).
+
+  Fallback-ul are nevoie de acces la loop devices în container (vezi
+  secțiunea 2 mai sus, blocul `loop-control`/`loop0-63`) și de pachetul
+  `ntfs-3g`; ambele sunt configurate automat de `scripts/setup-lxc.sh`.
+  Eșecurile fallback-ului (map/mount) apar în `journalctl -u pbs-restore`
+  cu prefixul `[vm-download]`.
