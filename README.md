@@ -8,8 +8,8 @@ backup-uri Proxmox Backup Server — atât pentru containere (CT, arhive
 
 - **Backend**: `app.py`, Flask, wrapper subțire peste binarele oficiale
   `proxmox-backup-client` și `proxmox-backup-file-restore`.
-- **Frontend**: `frontend/`, React + Vite + Tailwind, build static servit
-  direct de Flask din `static/`.
+- **Frontend**: `frontend/`, React + Vite + Tailwind, build static
+  (`frontend/dist/`, comitat în git) servit direct de Flask.
 - **Fără bază de date** — totul e citit live din PBS la fiecare cerere.
 
 Două mecanisme de acces la fișiere, în funcție de tipul arhivei:
@@ -41,10 +41,44 @@ adaugă un hypervisor nou, doar izolare de namespace-uri peste kernel-ul
 host-ului — deci `/dev/kvm` din interior e KVM-ul real al host-ului, un
 singur nivel de virtualizare, la fel ca file-restore-ul nativ din PVE.
 
-## Instalare de la zero (LXC pe Proxmox)
+## Instalare automată (recomandat)
 
-Toate comenzile de mai jos rulează **pe nodul Proxmox** (host), cu excepția
-secțiunilor marcate explicit "în container".
+`scripts/setup-lxc.sh` automatizează toți pașii de mai jos într-un singur
+script — creează LXC-ul, configurează device passthrough (calculează
+major:minor reale de pe host, nu hardcodate), verifică `kvm-ok`, instalează
+pachetele client, clonează repo-ul și pornește serviciul systemd. Idempotent
+— poți re-rula după o eroare, sare peste ce e deja făcut.
+
+Rulează **pe nodul Proxmox** (ca root), cu un template Debian deja
+descărcat local (`pveam list local`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dan-tal/proxmox-backup-client/master/scripts/setup-lxc.sh | bash
+```
+
+Sau, dacă ai deja repo-ul clonat pe host:
+
+```bash
+CTID=100 HOSTNAME=pbs-restore ./scripts/setup-lxc.sh
+```
+
+Variabile disponibile (toate opționale, cu valori implicite rezonabile):
+`CTID`, `HOSTNAME`, `TEMPLATE`, `STORAGE`, `DISK_SIZE`, `CORES`, `MEMORY`,
+`SWAP`, `BRIDGE`, `REPO_URL`, `APP_DIR`.
+
+La final, scriptul afișează adresa `http://<ip-lxc>:8080` — deschide-o și
+configurează conexiunea la PBS din interfața web.
+
+Pentru actualizări ulterioare (după un `git push` cu modificări), re-rulează
+scriptul (idempotent) sau doar pasul de `git pull` + `systemctl restart
+pbs-restore` din LXC (vezi secțiunea "Deploy și actualizări" mai jos).
+
+## Instalare manuală, pas cu pas (pentru depanare)
+
+Dacă `setup-lxc.sh` eșuează undeva sau vrei să înțelegi/depanezi fiecare
+pas separat, iată aceiași pași manual. Toate comenzile de mai jos rulează
+**pe nodul Proxmox** (host), cu excepția secțiunilor marcate explicit
+"în container".
 
 ### 1. Creează LXC-ul (Debian 13, privilegiat)
 
@@ -125,7 +159,7 @@ cat /sys/module/kvm_intel/parameters/nested   # sau kvm_amd
 ### 3. Instalează pachetele client PBS (în container)
 
 ```bash
-apt-get install -y curl gnupg ca-certificates fuse3
+apt-get install -y curl gnupg ca-certificates fuse3 git
 
 curl -fsSL https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg \
     -o /etc/apt/trusted.gpg.d/proxmox-release-trixie.gpg
@@ -140,6 +174,9 @@ apt-get install -y proxmox-backup-client proxmox-backup-file-restore \
     proxmox-backup-restore-image pve-qemu-kvm python3-flask
 ```
 
+`git` nu vine preinstalat pe template-ul minim Debian — fără el, orice
+`git clone`/`git pull` din pașii următori dă `bash: git: command not found`.
+
 Verificare rapidă:
 
 ```bash
@@ -153,9 +190,8 @@ Vezi secțiunea **"Deploy și actualizări (git)"** mai jos pentru fluxul
 recomandat. Pe scurt, în container:
 
 ```bash
-mkdir -p /opt/pbs-restore /mnt/pbs_mounts /var/tmp/pbs-restore
-cd /opt/pbs-restore
-git clone <url-repo> .   # sau git pull, daca exista deja
+mkdir -p /mnt/pbs_mounts /var/tmp/pbs-restore
+git clone https://github.com/dan-tal/proxmox-backup-client.git /opt/pbs-restore
 ```
 
 ### 5. Serviciul systemd
@@ -208,44 +244,34 @@ apel — nu necesită restart de serviciu.
 
 ## Deploy și actualizări (git)
 
-Proiectul nu are un remote extern by design (setup intern). Pentru a evita
-`scp` manual de fiecare dată când modifici codul, cel mai simplu e un
-**repo bare pe nodul Proxmox** (accesibil deja pe aceeași rețea, prin SSH):
+Proiectul are un remote real pe GitHub:
+`https://github.com/dan-tal/proxmox-backup-client.git`. `git` trebuie
+instalat manual în LXC (vezi pasul 3 de mai sus — nu vine preinstalat pe
+template-ul minim Debian).
 
-**Pe host-ul Proxmox (o singură dată):**
-
-```bash
-mkdir -p /root/git/pbs-restore.git
-git init --bare /root/git/pbs-restore.git
-```
-
-**Pe mașina de dezvoltare (unde e proiectul, o singură dată):**
+**Prima dată, în LXC:**
 
 ```bash
-git remote add pve ssh://root@<ip-proxmox>/root/git/pbs-restore.git
-git push pve master
-```
-
-**În LXC (o singură dată, la primul deploy):**
-
-```bash
-mkdir -p /opt/pbs-restore
-git clone ssh://root@<ip-proxmox>/root/git/pbs-restore.git /opt/pbs-restore
+git clone https://github.com/dan-tal/proxmox-backup-client.git /opt/pbs-restore
 ```
 
 **La fiecare modificare ulterioară**, fluxul e:
 
 ```bash
-# 1. pe mașina de dev, dupa ce ai commit-uit modificarile
-git push pve master
+# 1. pe mașina de dev, dupa ce ai commit-uit si push-uit modificarile
+git push origin master
 
 # 2. in frontend, daca ai modificat ceva in frontend/src
-cd frontend && npm run build   # regenereaza frontend/dist, il commit-ui si el
+cd frontend && npm run build   # regenereaza frontend/dist, il commit-ui si il push-uiesti si pe el
 
 # 3. in LXC
 cd /opt/pbs-restore && git pull
 systemctl restart pbs-restore
 ```
+
+Dacă repo-ul de pe GitHub e privat, `git clone`/`git pull` din LXC va cere
+autentificare (token de acces personal în loc de parolă, sau o cheie SSH
+adăugată la contul GitHub) — nu funcționează `git clone` anonim ca mai sus.
 
 `frontend/dist/` (build-ul compilat) e ținut în git intenționat, ca LXC-ul
 să nu aibă nevoie de Node.js instalat — `git pull` + `systemctl restart`
