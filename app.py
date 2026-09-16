@@ -37,7 +37,7 @@ from urllib.parse import quote
 from flask import Flask, jsonify, request, send_file, abort, Response, session
 from werkzeug.exceptions import HTTPException
 
-app = Flask(__name__, static_folder="static", static_url_path="")
+app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
