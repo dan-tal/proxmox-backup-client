@@ -942,10 +942,25 @@ def api_vm_download():
 
     raw_target = mount_path / fs_path.lstrip("/")
     if raw_target.is_symlink() and not raw_target.exists():
+        repository = load_pbs_config().get("repository", "<repository>")
+        windows_vmid = os.environ.get("WINDOWS_RECOVERY_VMID", "<VMID_server3>")
+        map_cmd = f"proxmox-backup-client map {snapshot}:{archive} --repository {repository}"
+        qm_cmd = (f"qm set {windows_vmid} -scsiN /dev/loopN,ro=1  "
+                  f"# inlocuieste N si loopN cu urmatorul slot liber / device-ul intors de comanda de mai sus")
         return jsonify({
-            "error": "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
-                     "deduplicare Windows Server / Data Deduplication) - continutul real nu e in "
-                     "backup, nu poate fi recuperat de aici. Vezi README, Troubleshooting.",
+            "error": (
+                "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
+                "deduplicare Windows Server / Data Deduplication) - continutul real nu e in "
+                "backup, nu poate fi recuperat de aici prin extragere/montare Linux.\n\n"
+                "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
+                "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
+                "Ruleaza pe host (pveDan):\n\n"
+                f"1) {map_cmd}\n"
+                f"2) {qm_cmd}\n\n"
+                "Apoi, in Windows (VM-ul de recuperare), adu discul online read-only din Disk "
+                "Management si copiaza fisierul cu:\n"
+                "robocopy <sursa> <destinatie> /B /E"
+            ),
         }), 409
 
     target = safe_join(mount_path, fs_path)
