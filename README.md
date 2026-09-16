@@ -239,11 +239,10 @@ Notă: **PBS_REPOSITORY / PBS_PASSWORD / PBS_FINGERPRINT nu mai sunt
 variabile de mediu** — se configurează din interfața web (vezi mai jos),
 nu mai e nevoie de ele în unit-ul systemd.
 
-Notă: **LANG/LC_ALL=C.UTF-8** e necesar pentru fișiere cu diacritice (ntfs-3g,
-folosit de `proxmox-file-restore` în interiorul micro-VM-ului de restore, are
-nevoie de un locale UTF-8 ca să caute nume de fișiere cu caractere non-ASCII —
-fără el, listarea merge, dar extragerea eșuează silențios cu 0 bytes). Vezi
-Troubleshooting mai jos.
+Notă: `LANG`/`LC_ALL=C.UTF-8` e setat ca bună practică generală, dar **nu
+rezolvă** descărcarea fișierelor cu diacritice din discuri VM — asta e un bug
+separat, confirmat în `proxmox-file-restore` însuși (vezi Troubleshooting mai
+jos), nu o problemă de locale pe host.
 
 ### 6. Prima configurare (din GUI)
 
@@ -327,18 +326,28 @@ frontend/dist/           build-ul compilat, servit static de Flask (comitat in g
   pentru nivelurile mai adânci de root).
 - **`kvm-ok` spune că nu poate accelera** → vezi secțiunea 2 de mai sus
   (nested-virt dezactivată pe host, dacă host-ul Proxmox e el însuși o VM).
-- **Fișier cu diacritice în nume se descarcă cu 0 bytes** (deși apare corect
-  în listare și se vede cu mărimea reală în GUI-ul PVE) → containerul nu are
-  un locale UTF-8 setat pentru serviciul `pbs-restore`. Verifică:
+- **Fișier/folder cu nume ce conțin diacritice se descarcă trunchiat sau cu
+  0 bytes** (deși apare corect în listare, cu mărimea reală) → **bug confirmat
+  în `proxmox-file-restore` însuși**, nu în aplicația asta. Reprodus izolat,
+  direct din linia de comandă, în afara aplicației:
   ```bash
-  systemctl show pbs-restore -p Environment | grep -o 'LANG=[^ ]*'
+  proxmox-file-restore extract <snapshot> <path-base64> /tmp/out.pdf --format plain --base64 true
+  # error extracting /nume cu diacritice.pdf: extracted 0 bytes of a file of NNNN bytes
+  # error extracting pxar archive: unexpected EOF
   ```
-  Dacă lipsește, adaugă `Environment=LANG=C.UTF-8` și
-  `Environment=LC_ALL=C.UTF-8` în `/etc/systemd/system/pbs-restore.service`
-  (secțiunea `[Service]`), apoi:
-  ```bash
-  systemctl daemon-reload && systemctl restart pbs-restore
-  ```
-  LXC-urile create cu `scripts/setup-lxc.sh` de la
-  [commit-ul curent](https://github.com/dan-tal/proxmox-backup-client) au
-  deja aceste variabile; problema apare doar pe instalări mai vechi.
+  Micro-VM-ul de restore citește corect metadatele (nume, mărime), dar
+  eșuează la citirea conținutului de pe NTFS pentru fișierele cu nume
+  non-ASCII. La extragere ZIP a unui folder, primul fișier "problematic"
+  întâlnit oprește toată extragerea (nu doar el e omis) — deci un folder cu
+  măcar un fișier cu diacritice devine netransferabil ca ZIP.
+  `LANG`/`LC_ALL` pe host **nu ajută** — micro-VM-ul de restore are propriul
+  kernel/rootfs, izolat, și nu moștenește variabilele de mediu ale
+  serviciului `pbs-restore`. Foarte probabil afectează și File Restore-ul
+  nativ din GUI-ul PVE, pentru că folosește același binar pe dedesubt.
+  Aplicația acum detectează eșecul și întoarce o eroare clară (502) în loc
+  de un fișier fals de 0 bytes pentru descărcări unde eroarea apare de la
+  început; pentru eșecuri la mijlocul unui stream ZIP (fișier deja parțial
+  trimis către client), vezi `journalctl -u pbs-restore` pentru mesajul
+  `[vm-download] esuat la mijlocul stream-ului...`. Nu există un workaround
+  cunoscut la nivel de aplicație — merită raportat la Proxmox
+  (bugzilla.proxmox.com), cu pașii de reproducere de mai sus.

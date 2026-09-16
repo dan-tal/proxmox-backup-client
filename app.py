@@ -799,7 +799,15 @@ def api_vm_download():
         finally:
             if proc.poll() is None:
                 proc.kill()  # clientul a abandonat download-ul
-            proc.wait()
+            rc = proc.wait()
+            # esec la mijlocul stream-ului (dupa ce am trimis deja status 200) -
+            # clientul primeste un fisier/zip trunchiat fara nicio eroare vizibila;
+            # logam macar aici ca sa se vada in jurnal (vezi README, troubleshooting:
+            # nume cu diacritice pot bloca extragerea, atat individual cat si in zip).
+            if rc != 0:
+                stderr_file.seek(0)
+                err = stderr_file.read().decode(errors="replace").strip()
+                print(f"[vm-download] esuat la mijlocul stream-ului (rc={rc}) pt {snapshot} path={path}: {err}", flush=True)
             stderr_file.close()
 
     mimetype = "application/zip" if is_dir else "application/octet-stream"
