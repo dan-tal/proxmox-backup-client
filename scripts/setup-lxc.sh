@@ -38,8 +38,10 @@ set -euo pipefail
 HOSTNAME="${HOSTNAME:-pbs-restore}"
 DISK_SIZE="${DISK_SIZE:-4}"
 CORES="${CORES:-2}"
-MEMORY="${MEMORY:-1024}"
-SWAP="${SWAP:-512}"
+# 2GB - pve-qemu-kvm are multe dependente; sub atat, apt-get poate fi
+# omorat de OOM killer in timpul unpack-ului (patit deja o data).
+MEMORY="${MEMORY:-2048}"
+SWAP="${SWAP:-1024}"
 BRIDGE="${BRIDGE:-vmbr0}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 REPO_URL="${REPO_URL:-https://github.com/dan-tal/proxmox-backup-client.git}"
