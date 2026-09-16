@@ -361,10 +361,12 @@ def get_disk_partition_mount(snapshot, archive, partition):
             if result.returncode != 0:
                 del _disk_maps[key]
                 raise RuntimeError(result.stderr.strip() or "proxmox-backup-client map a esuat")
-            m = DISK_MAP_RE.search(result.stdout)
+            # mesajul "mapped on /dev/loopN" vine pe stderr, nu pe stdout.
+            m = DISK_MAP_RE.search(result.stdout) or DISK_MAP_RE.search(result.stderr)
             if not m:
                 del _disk_maps[key]
-                raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {result.stdout.strip()}")
+                combined = (result.stdout.strip() + " " + result.stderr.strip()).strip()
+                raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {combined}")
             entry["loop_dev"] = m.group(1)
 
         if partition not in entry["mounts"]:
