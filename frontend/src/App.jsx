@@ -173,6 +173,8 @@ function Workspace({ user, onLogout }) {
             params.delete("dedupHelp");
             params.delete("ctid");
             params.delete("vmid");
+            params.delete("dedupSnapshot");
+            params.delete("dedupArchive");
             const qs = params.toString();
             window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
           }}

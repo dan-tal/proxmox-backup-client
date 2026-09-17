@@ -25,7 +25,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -33,11 +32,10 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlencode
 
 from flask import Flask, jsonify, request, send_file, abort, session
 from werkzeug.exceptions import HTTPException
-
-APP_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -110,14 +108,22 @@ DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
 # (recuperare manuala prin VM Windows), nu in logica de extragere propriu-zisa.
 LXC_CTID = os.environ.get("PBS_LXC_CTID", "100")
 WINDOWS_RECOVERY_VMID = os.environ.get("WINDOWS_RECOVERY_VMID", "101")
-def restore_dedup_help_url():
+def restore_dedup_help_url(snapshot=None, archive=None):
     """Link catre pagina interactiva din aplicatie (nu RESTORE-DEDUP.md static)
-    - genereaza comenzile live, cu CTID/VMID deja completate din config.
+    - genereaza comenzile live, cu CTID/VMID deja completate din config, si
+    (daca sunt date) comenzile specifice fisierului curent (snapshot+archive).
     Baza URL e derivata din request.host_url (scheme/host cum a ajuns
     cererea la Flask) - daca aplicatia ruleaza dupa un reverse proxy/TLS
     terminator, seteaza APP_PUBLIC_URL explicit (ex: https://pbs.example.com)."""
     base = os.environ.get("APP_PUBLIC_URL", "").rstrip("/") or request.host_url.rstrip("/")
-    return f"{base}/?dedupHelp=1&ctid={LXC_CTID}&vmid={WINDOWS_RECOVERY_VMID}"
+    params = {"dedupHelp": "1", "ctid": LXC_CTID, "vmid": WINDOWS_RECOVERY_VMID}
+    # nume distincte de "snapshot"/"archive" - alea sunt deja folosite de
+    # App.jsx pt persistenta navigarii proprii in URL; le-am fi ciocnit.
+    if snapshot:
+        params["dedupSnapshot"] = snapshot
+    if archive:
+        params["dedupArchive"] = archive
+    return f"{base}/?{urlencode(params)}"
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
 _lock = threading.Lock()
@@ -1040,25 +1046,6 @@ def api_vm_download():
 
     raw_target = mount_path / fs_path.lstrip("/")
     if raw_target.is_symlink() and not raw_target.exists():
-        # Comanda trebuie rulata din host prin 'pct exec', nu direct cu
-        # --repository: proxmox-backup-client de pe host nu are acces la
-        # PBS_PASSWORD/PBS_FINGERPRINT din config.json (acelea exista doar
-        # ca env in acest proces Flask, vezi pbs_env()) - trebuie reexportate
-        # explicit in container. Delegam la un script din repo (nu la un
-        #'bash -c' cu snapshot/archive interpolate direct) ca sa evitam
-        # shell injection daca archive contine ghilimele/caractere speciale
-        # (archive vine din path-ul cerut de client, vezi parse_vm_disk_path).
-        recovery_script = APP_DIR / "scripts" / "pbs-map-for-recovery.py"
-        map_cmd = (
-            f"pct exec {LXC_CTID} -- python3 {shlex.quote(str(recovery_script))} "
-            f"{shlex.quote(snapshot)} {shlex.quote(archive)}"
-        )
-        # scsi1 e un exemplu concret (dupa reset, de obicei liber), nu un
-        # placeholder literal ca inainte ("scsiN") - "scsiN" nu e o optiune
-        # valida pentru 'qm set' si a fost copiat/rulat ca atare, gresit.
-        qm_cmd = (f"qm set {WINDOWS_RECOVERY_VMID} --scsi1 /dev/loopX,ro=1  "
-                  "# inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, "
-                  "si '/dev/loopX' cu device-ul EXACT din mesajul de mai sus (ex: /dev/loop8)")
         return jsonify({
             "error": (
                 "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
@@ -1066,14 +1053,8 @@ def api_vm_download():
                 "backup, nu poate fi recuperat de aici prin extragere/montare Linux.\n\n"
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
-                "Procesul complet (deconectare VM, detasare disc vechi, cleanup) e in "
-                f"{restore_dedup_help_url()} . Comenzile specifice acestui "
-                "fisier, de rulat pe host (pveDan):\n\n"
-                f"1) {map_cmd}\n"
-                f"2) {qm_cmd}\n\n"
-                "Apoi, in Windows (VM-ul de recuperare), adu discul online (fara Initialize!) din "
-                "Disk Management si copiaza fisierul cu:\n"
-                "robocopy <sursa> <destinatie> /B /E"
+                "Comenzile exacte (deja completate pt acest fisier) sunt in pagina de recuperare "
+                f"din aplicatie: {restore_dedup_help_url(snapshot, archive)}"
             ),
         }), 409
 

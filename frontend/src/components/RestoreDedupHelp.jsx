@@ -27,9 +27,15 @@ function CodeBlock({ code }) {
   );
 }
 
+// Citare minimala pt shell (POSIX) - suficient pt afisare/copiere, nu pt
+// executie directa aici (asta ruleaza doar in terminalul userului).
+function shQuote(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
 // Genereaza aceleasi comenzi ca in RESTORE-DEDUP.md (repo), dar cu CTID/VMID
 // completate din inputurile de mai jos, nu ca text static de copiat manual.
-function buildSteps(ctid, vmid) {
+function buildSteps(ctid, vmid, snapshot, archive) {
   return [
     {
       title: "Pasul 1 — Reset complet (obligatoriu, de fiecare dată, înainte de orice disc nou)",
@@ -70,10 +76,20 @@ qm stop ${vmid}        # VM-ul de recuperare, daca era pornit cu discul atasat`,
       text: `Măsură de siguranță: discul atașat conține date dintr-un alt domeniu/context. Din GUI Proxmox: VM ${vmid} → Hardware → Network Device → debifează "Connected". Sau din CLI (înlocuiește <net-config> cu ce arată "qm config ${vmid} | grep net0"):`,
       code: `qm set ${vmid} --net0 <net-config-curent>,link_down=1`,
     },
-    {
-      title: "Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit",
-      text: "Nu ghici comenzile — mesajul de eroare 409 din GUI, pentru fișierul respectiv, conține deja comanda pct exec exactă (snapshot + arhivă completate) și comanda qm set de după. Copiază-le direct de-acolo și rulează-le pe host, în ordine. Rezultatul: un disc nou atașat la VM, read-only (ro=1 — niciodată nu scriem pe datele din backup).",
-    },
+    snapshot && archive
+      ? {
+          title: "Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit",
+          text: `Comenzi pentru fișierul curent (snapshot ${snapshot}, arhivă ${archive}) - rulează pe host, în ordine:`,
+          code: `pct exec ${ctid} -- python3 /opt/pbs-restore/scripts/pbs-map-for-recovery.py ${shQuote(snapshot)} ${shQuote(archive)}`,
+          extra: {
+            text: "Notează /dev/loopN din mesaj (tipărit pe stderr), apoi rulează (rezultatul: disc nou atașat la VM, read-only — niciodată nu scriem pe datele din backup):",
+            code: `qm set ${vmid} --scsi1 /dev/loopN,ro=1  # inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, si '/dev/loopN' cu device-ul EXACT de mai sus`,
+          },
+        }
+      : {
+          title: "Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit",
+          text: "Deschide această pagină din mesajul de eroare 409 al unui fișier anume (butonul din GUI) ca să vezi aici comenzile exacte, deja completate cu snapshot-ul și arhiva lui. Fără asta, nu poate fi generată comanda — fiecare fișier vine dintr-un snapshot/arhivă diferite.",
+        },
     {
       title: "Pasul 4 — În Windows: adu discul online și copiază fișierul",
       text: "Dacă VM-ul rula deja, discul nou poate să nu apară imediat (hot-add PCIe nu mereu e detectat automat):",
@@ -109,7 +125,9 @@ export default function RestoreDedupHelp({ onClose }) {
   const params = new URLSearchParams(window.location.search);
   const [ctid, setCtid] = useState(params.get("ctid") || "100");
   const [vmid, setVmid] = useState(params.get("vmid") || "101");
-  const steps = buildSteps(ctid.trim() || "100", vmid.trim() || "101");
+  const snapshot = params.get("dedupSnapshot");
+  const archive = params.get("dedupArchive");
+  const steps = buildSteps(ctid.trim() || "100", vmid.trim() || "101", snapshot, archive);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>
