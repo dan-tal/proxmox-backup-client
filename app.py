@@ -1027,8 +1027,12 @@ def api_vm_download():
             f"pct exec {LXC_CTID} -- python3 {shlex.quote(str(recovery_script))} "
             f"{shlex.quote(snapshot)} {shlex.quote(archive)}"
         )
-        qm_cmd = (f"qm set {WINDOWS_RECOVERY_VMID} --scsiN /dev/loopN,ro=1  "
-                  "# inlocuieste N cu un slot scsi liber si loopN cu device-ul din mesajul de mai sus")
+        # scsi1 e un exemplu concret (dupa reset, de obicei liber), nu un
+        # placeholder literal ca inainte ("scsiN") - "scsiN" nu e o optiune
+        # valida pentru 'qm set' si a fost copiat/rulat ca atare, gresit.
+        qm_cmd = (f"qm set {WINDOWS_RECOVERY_VMID} --scsi1 /dev/loopX,ro=1  "
+                  "# inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, "
+                  "si '/dev/loopX' cu device-ul EXACT din mesajul de mai sus (ex: /dev/loop8)")
         return jsonify({
             "error": (
                 "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
