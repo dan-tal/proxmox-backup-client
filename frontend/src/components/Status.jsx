@@ -17,15 +17,21 @@ function linkify(text) {
   // split cu regex cu grup de captura intercaleaza [text, url, text, url, ...]
   // - indexii impari sunt mereu URL-urile capturate (nu refolosim regex-ul
   // global cu .test() aici, ca sa evitam bug-ul clasic de lastIndex statefull)
-  return text.split(URL_RE).map((part, i) =>
-    i % 2 === 1 ? (
-      <a key={i} href={part} target="_blank" rel="noreferrer" className="underline hover:text-red-200">
-        {part}
-      </a>
-    ) : (
-      part
-    ),
-  );
+  return text.split(URL_RE).map((part, i) => {
+    if (i % 2 !== 1) return part;
+    // taie punctuatia de final (virgula, punct etc.) care apartine
+    // propozitiei, nu URL-ului - altfel apare in link ("...RESTORE-DEDUP.md,")
+    const trailing = part.match(/[.,;:!?)]+$/)?.[0] || "";
+    const url = trailing ? part.slice(0, -trailing.length) : part;
+    return (
+      <span key={i}>
+        <a href={url} target="_blank" rel="noreferrer" className="underline hover:text-red-200">
+          {url}
+        </a>
+        {trailing}
+      </span>
+    );
+  });
 }
 
 export function ErrorBox({ message, onRetry }) {
