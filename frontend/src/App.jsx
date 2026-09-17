@@ -144,6 +144,15 @@ function Workspace({ user, onLogout }) {
           <p className="truncate text-xs text-zinc-500">Browsing și download read-only din backup-uri</p>
         </div>
         {user && <span className="hidden text-sm text-zinc-400 sm:inline">{user}</span>}
+        <a
+          href="https://github.com/dan-tal/proxmox-backup-client/blob/master/RESTORE-DEDUP.md"
+          target="_blank"
+          rel="noreferrer"
+          title="Recuperare manuală fișiere deduplicate (RESTORE-DEDUP.md)"
+          className={iconBtn}
+        >
+          <Icon name="book" />
+        </a>
         <button onClick={() => setSettingsOpen(true)} title="Setări conexiune PBS" className={iconBtn}>
           <Icon name="settings" />
         </button>
