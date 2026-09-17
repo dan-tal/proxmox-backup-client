@@ -1,16 +1,14 @@
 import { useState } from "react";
+import { copyText } from "../utils/clipboard.js";
 import Icon from "./Icon.jsx";
 import { iconBtn, inputCls } from "./ui.js";
 
 function CodeBlock({ code }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    if (await copyText(code)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      window.prompt("Comandă:", code);
     }
   };
   return (

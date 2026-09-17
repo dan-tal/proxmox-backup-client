@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { useResource } from "../hooks/useResource.js";
+import { copyText } from "../utils/clipboard.js";
 import { formatSize, formatTime } from "../utils/format.js";
 import { archiveLabel } from "./ArchivePicker.jsx";
 import Icon from "./Icon.jsx";
@@ -321,13 +322,9 @@ function FileRow({ entry, onOpen, downloadUrl, onDownload }) {
 
   const copyLink = async () => {
     const href = new URL(downloadUrl, window.location.origin).href;
-    try {
-      await navigator.clipboard.writeText(href);
+    if (await copyText(href)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard API cere HTTPS sau localhost
-      window.prompt("Link de descărcare:", href);
     }
   };
 
