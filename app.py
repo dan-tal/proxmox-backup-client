@@ -110,6 +110,13 @@ DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
 # (recuperare manuala prin VM Windows), nu in logica de extragere propriu-zisa.
 LXC_CTID = os.environ.get("PBS_LXC_CTID", "100")
 WINDOWS_RECOVERY_VMID = os.environ.get("WINDOWS_RECOVERY_VMID", "101")
+# Link direct catre github, nu ruta locala /RESTORE-DEDUP.md - simplu, fara
+# nicio dependenta de routing-ul propriu al aplicatiei (care a dat 404 la
+# un test real, motiv neclar - static_folder cu static_url_path="" pare sa
+# intercepteze ruta, dar merita reinvestigat daca revine nevoia de link local).
+RESTORE_DEDUP_URL = os.environ.get(
+    "RESTORE_DEDUP_URL", "https://github.com/dan-tal/proxmox-backup-client/blob/master/RESTORE-DEDUP.md"
+)
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
 _lock = threading.Lock()
@@ -381,8 +388,8 @@ def get_disk_partition_mount(snapshot, archive, partition):
                     raise RuntimeError(
                         "arhiva e deja mapata (foarte probabil de la o sesiune de recuperare "
                         "manuala prin VM Windows, inca activa) - proxmox-backup-client refuza "
-                        f"sa mapeze aceeasi arhiva de doua ori. Vezi {request.host_url.rstrip('/')}"
-                        "/RESTORE-DEDUP.md, Pasul 1 (Reset complet), inainte sa reincerci."
+                        f"sa mapeze aceeasi arhiva de doua ori. Vezi {RESTORE_DEDUP_URL}, "
+                        "Pasul 1 (Reset complet), inainte sa reincerci."
                     )
                 raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {combined}")
             entry["loop_dev"] = m.group(1)
@@ -1056,7 +1063,7 @@ def api_vm_download():
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
                 "Procesul complet (deconectare VM, detasare disc vechi, cleanup) e in "
-                f"{request.host_url.rstrip('/')}/RESTORE-DEDUP.md . Comenzile specifice acestui "
+                f"{RESTORE_DEDUP_URL} . Comenzile specifice acestui "
                 "fisier, de rulat pe host (pveDan):\n\n"
                 f"1) {map_cmd}\n"
                 f"2) {qm_cmd}\n\n"
@@ -1079,14 +1086,6 @@ def api_vm_download():
         return send_and_cleanup(zip_path, download_name, fb_workdir)
 
     return send_file(target, as_attachment=True, download_name=download_name)
-
-
-@app.route("/RESTORE-DEDUP.md")
-def restore_dedup_doc():
-    # Servit direct de aplicatie (nu doar link catre GitHub) ca sa fie
-    # mereu in sync cu ce ruleaza efectiv, si accesibil chiar daca VM-ul de
-    # recuperare e deconectat de la internet (vezi RESTORE-DEDUP.md, pasul 2).
-    return send_file(APP_DIR / "RESTORE-DEDUP.md", mimetype="text/plain; charset=utf-8")
 
 
 @app.route("/")
