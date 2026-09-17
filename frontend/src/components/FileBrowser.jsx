@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { useResource } from "../hooks/useResource.js";
 import { formatSize, formatTime } from "../utils/format.js";
@@ -8,6 +8,18 @@ import { Empty, ErrorBox, Loading } from "./Status.jsx";
 import { iconBtn, inputCls, primaryBtn } from "./ui.js";
 
 const joinPath = (dir, name) => `${dir === "/" ? "" : dir}/${name}`;
+
+// Deriva un nume de afisat pt un ref restaurat din URL (fara sa mai facem
+// cereri catre API doar ca sa aflam numele folderului curent).
+function leafNameFromRef(kind, ref) {
+  try {
+    const raw = kind === "diskimage" ? atob(ref) : decodeURIComponent(ref);
+    const segments = raw.split("/").filter(Boolean);
+    return segments[segments.length - 1] || null;
+  } catch {
+    return null;
+  }
+}
 
 // Backend-ul foloseste mecanisme diferite pe tip de arhiva; `ref` e path-ul
 // clar (pxar) sau filepath-ul base64 opac intors de proxmox-file-restore (disc VM).
@@ -84,17 +96,36 @@ async function triggerDownload(url, filename, setError) {
   URL.revokeObjectURL(blobUrl);
 }
 
-export default function FileBrowser({ snapshot, archive }) {
+export default function FileBrowser({ snapshot, archive, initialPath }) {
   const mode = MODES[archive.kind];
-  const [trail, setTrail] = useState([
-    { name: archiveLabel(archive), ref: mode.rootRef(archive.filename), downloadable: false },
-  ]);
+  const rootRef = mode.rootRef(archive.filename);
+  const [trail, setTrail] = useState(() => {
+    const root = { name: archiveLabel(archive), ref: rootRef, downloadable: false };
+    if (!initialPath || initialPath === rootRef) return [root];
+    const name = leafNameFromRef(archive.kind, initialPath);
+    if (!name) return [root]; // ref nerecognoscibil (schimbat intre timp?) - pornim din radacina
+    // downloadable: false - nu stim sigur (fara un apel API) daca nodul e un
+    // folder normal sau, la disc VM, un nivel intermediar de selectie a
+    // partitiei (kind "disk", nedescarcabil) - conservator, fara buton ZIP
+    // pana navigheaza din nou (butonul revine automat la orice folder real).
+    return [root, { name, ref: initialPath, navigable: true, downloadable: false }];
+  });
   const [query, setQuery] = useState("");
   const [downloadError, setDownloadError] = useState(null);
   const [dedupTarget, setDedupTarget] = useState(null); // entry al carui download a dat 409
   const [dedupResult, setDedupResult] = useState(null); // { loading, matches, timedOut, error }
   const current = trail[trail.length - 1];
   const atRoot = trail.length === 1;
+
+  // Reflecta folderul curent in URL (?path=...) ca navigarea sa
+  // supravietuiasca unui refresh si sa poata fi copiata ca link direct.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (current.ref !== rootRef) params.set("path", current.ref);
+    else params.delete("path");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [current.ref, rootRef]);
 
   const listing = useResource(
     () => mode.list(snapshot, archive.filename, current.ref),

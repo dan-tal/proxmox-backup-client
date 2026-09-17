@@ -75,8 +75,46 @@ function Workspace({ user, onLogout }) {
   const [archiveName, setArchiveName] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Citit o singura data la montare (nu se schimba dupa) - starea din URL de
+  // la deschidere, folosita doar pt restaurare, nu resincronizata continuu.
+  const [initialParams] = useState(() => new URLSearchParams(window.location.search));
+
   const groups = useResource(() => api.groups(), []);
   const snapshots = useResource(group ? () => api.snapshots(group.group) : null, [group?.group]);
+
+  // Restaureaza grupul/snapshot-ul/arhiva din URL de indata ce datele
+  // corespunzatoare se incarca (nu se poate dintr-o data - trebuie sa
+  // gasim obiectele complete in listele incarcate live din PBS).
+  useEffect(() => {
+    if (!groups.data || group) return;
+    const g = groups.data.find((x) => x.group === initialParams.get("group"));
+    if (g) setGroup(g);
+  }, [groups.data]);
+  useEffect(() => {
+    if (!snapshots.data || !group || snapshot) return;
+    const wantSnapshot = initialParams.get("snapshot");
+    if (!wantSnapshot) return;
+    const s = snapshots.data.find((x) => x.snapshot === wantSnapshot);
+    if (!s) return;
+    setSnapshot(s);
+    const wantArchive = initialParams.get("archive");
+    const match = s.archives.find((a) => a.filename === wantArchive && BROWSABLE_KINDS.includes(a.kind));
+    setArchiveName(match ? wantArchive : (s.archives.find((a) => BROWSABLE_KINDS.includes(a.kind))?.filename ?? null));
+  }, [snapshots.data, group]);
+
+  // Reflecta starea curenta in URL (fara sa sterga alti parametri, ex.
+  // "path" gestionat separat de FileBrowser) - ca navigarea sa supravietuiasca
+  // unui refresh si sa poata fi copiata/trimisa ca link.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const setOrDelete = (k, v) => (v ? params.set(k, v) : params.delete(k));
+    setOrDelete("group", group?.group);
+    setOrDelete("snapshot", snapshot?.snapshot);
+    setOrDelete("archive", archiveName);
+    if (!snapshot) params.delete("path"); // fara snapshot, "path" nu mai are sens
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [group, snapshot, archiveName]);
 
   const selectGroup = (g) => {
     setGroup(g);
@@ -153,6 +191,14 @@ function Workspace({ user, onLogout }) {
                   key={`${snapshot.snapshot}|${archive.filename}`}
                   snapshot={snapshot.snapshot}
                   archive={archive}
+                  // Doar daca inca suntem exact pe snapshot-ul/arhiva din URL
+                  // de la deschidere - altfel (utilizatorul a navigat manual
+                  // in alta parte) "path"-ul vechi din URL nu mai e valabil.
+                  initialPath={
+                    snapshot.snapshot === initialParams.get("snapshot") && archiveName === initialParams.get("archive")
+                      ? initialParams.get("path")
+                      : null
+                  }
                 />
               )}
             </>
