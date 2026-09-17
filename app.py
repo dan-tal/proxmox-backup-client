@@ -26,7 +26,9 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -279,6 +281,8 @@ def mount_key(snapshot, archive):
 
 def get_mount_path(snapshot, archive):
     """Monteaza (daca nu e deja) arhiva pxar a unui snapshot si intoarce path-ul local."""
+    if _shutting_down.is_set():
+        raise RuntimeError("aplicatia se opreste (deploy in curs) - reincearca in cateva secunde")
     key = mount_key(snapshot, archive)
     with _lock:
         entry = _mounts.get(key)
@@ -363,6 +367,8 @@ def get_disk_partition_mount(snapshot, archive, partition):
     discul mapat), ataseaza un loop device separat exact pe acel interval
     de bytes - evita nevoia de device-uri blkext dinamice, care nu pot fi
     trecute predictibil in LXC - si monteaza cu ntfs-3g read-only."""
+    if _shutting_down.is_set():
+        raise RuntimeError("aplicatia se opreste (deploy in curs) - reincearca in cateva secunde")
     key = (snapshot, archive)
     with _disk_map_lock:
         entry = _disk_maps.get(key)
@@ -535,6 +541,32 @@ def cleanup_loop():
                 unmap_disk(k)
         reap_stale_restore_vms()
 
+
+_shutting_down = threading.Event()
+
+
+def cleanup_all_and_exit(signum, _frame):
+    # 'systemctl restart'/'stop' trimit SIGTERM - fara handler explicit,
+    # Python il ignora complet si termina imediat, lasand orfane maparile
+    # proxmox-backup-client active (procesul lor moare odata cu al nostru,
+    # dar kernel-ul/pidfile-ul raman - "unmap" ulterior nu le mai poate
+    # curata, vezi RESTORE-DEDUP.md). Eliberam tot explicit inainte sa iesim.
+    # Setam flag-ul primul, inainte de a elibera vreun lock, ca o cerere noua
+    # (alt thread) sa nu apuce sa creeze un mount/map chiar in fereastra asta
+    # de shutdown (ar ramane orfan, negestionat de bucla de mai jos).
+    print(f"[shutdown] semnal {signum} primit, eliberez mount-uri/mapari active...", flush=True)
+    _shutting_down.set()
+    with _lock:
+        for k in list(_mounts.keys()):
+            unmount(k)
+    with _disk_map_lock:
+        for k in list(_disk_maps.keys()):
+            unmap_disk(k)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, cleanup_all_and_exit)
+signal.signal(signal.SIGINT, cleanup_all_and_exit)
 
 threading.Thread(target=cleanup_loop, daemon=True).start()
 
