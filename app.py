@@ -374,6 +374,16 @@ def get_disk_partition_mount(snapshot, archive, partition):
             if not m:
                 del _disk_maps[key]
                 combined = (result.stdout.strip() + " " + result.stderr.strip()).strip()
+                # 'map' poate intoarce exit code 0 chiar si cand refuza sa mapeze
+                # (nu doar la eroare reala) - cazul cel mai frecvent in practica
+                # e o sesiune de recuperare manuala prin VM Windows inca activa.
+                if "already mapped" in combined.lower():
+                    raise RuntimeError(
+                        "arhiva e deja mapata (foarte probabil de la o sesiune de recuperare "
+                        "manuala prin VM Windows, inca activa) - proxmox-backup-client refuza "
+                        f"sa mapeze aceeasi arhiva de doua ori. Vezi {request.host_url.rstrip('/')}"
+                        "/RESTORE-DEDUP.md, Pasul 1 (Reset complet), inainte sa reincerci."
+                    )
                 raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {combined}")
             entry["loop_dev"] = m.group(1)
 
@@ -1008,6 +1018,11 @@ def api_vm_download():
     try:
         mount_path = get_disk_partition_mount(snapshot, archive, partition)
     except RuntimeError as e:
+        # Cazul "deja mapata" e o stare clara si actionabila (nu o eroare
+        # tehnica de diagnosticat) - afisam direct mesajul, fara zgomotul
+        # celeilalte erori (extragerea normala, oricum irelevanta aici).
+        if "deja mapata" in str(e):
+            return jsonify({"error": str(e).capitalize()}), 409
         return jsonify({
             "error": f"{primary_err or 'extragere esuata'}; fallback (montare directa) a esuat si el: {e}",
         }), 502
