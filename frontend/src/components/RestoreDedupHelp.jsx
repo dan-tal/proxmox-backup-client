@@ -79,16 +79,19 @@ qm stop ${vmid}        # VM-ul de recuperare, daca era pornit cu discul atasat`,
     snapshot && archive
       ? {
           title: "Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit",
-          text: `Comenzi pentru fișierul curent (snapshot ${snapshot}, arhivă ${archive}) - rulează pe host, în ordine:`,
-          code: `pct exec ${ctid} -- python3 /opt/pbs-restore/scripts/pbs-map-for-recovery.py ${shQuote(snapshot)} ${shQuote(archive)}`,
+          text: `Un singur script pentru fișierul curent (snapshot ${snapshot}, arhivă ${archive}) - mapează, citește automat device-ul din output și atașează la VM, fără să mai copiezi manual nimic între cele două comenzi. Rulează pe host (dacă scsi1 e deja ocupat la VM-ul de recuperare, schimbă-l în script înainte să rulezi):`,
+          code: `OUT=$(pct exec ${ctid} -- python3 /opt/pbs-restore/scripts/pbs-map-for-recovery.py ${shQuote(snapshot)} ${shQuote(archive)} 2>&1)
+echo "$OUT"
+DEV=$(echo "$OUT" | grep -oP '/dev/loop\\d+')
+if [ -z "$DEV" ]; then echo "nu am gasit device-ul mapat in output de mai sus"; exit 1; fi
+qm set ${vmid} --scsi1 "$DEV",ro=1`,
           extra: {
-            text: "Notează /dev/loopX din mesaj (tipărit pe stderr), apoi rulează (rezultatul: disc nou atașat la VM, read-only — niciodată nu scriem pe datele din backup):",
-            code: `qm set ${vmid} --scsi1 /dev/loopX,ro=1  # inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, si '/dev/loopX' cu device-ul EXACT de mai sus`,
+            text: "Rezultatul: un disc nou atașat la VM, read-only (ro=1 — niciodată nu scriem pe datele din backup).",
           },
         }
       : {
           title: "Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit",
-          text: "Deschide această pagină din mesajul de eroare 409 al unui fișier anume (butonul din GUI) ca să vezi aici comenzile exacte, deja completate cu snapshot-ul și arhiva lui. Fără asta, nu poate fi generată comanda — fiecare fișier vine dintr-un snapshot/arhivă diferite.",
+          text: "Deschide această pagină din mesajul de eroare 409 al unui fișier anume (butonul din GUI) ca să vezi aici comanda exactă, deja completată cu snapshot-ul și arhiva lui. Fără asta, nu poate fi generată comanda — fiecare fișier vine dintr-un snapshot/arhivă diferite.",
         },
     {
       title: "Pasul 4 — În Windows: adu discul online și copiază fișierul",
@@ -168,19 +171,19 @@ export default function RestoreDedupHelp({ onClose }) {
               {s.extra && (
                 <>
                   <p className="text-sm text-zinc-400">{s.extra.text}</p>
-                  <CodeBlock code={s.extra.code} />
+                  {s.extra.code && <CodeBlock code={s.extra.code} />}
                 </>
               )}
               {s.extra2 && (
                 <>
                   <p className="text-sm text-zinc-400">{s.extra2.text}</p>
-                  <CodeBlock code={s.extra2.code} />
+                  {s.extra2.code && <CodeBlock code={s.extra2.code} />}
                 </>
               )}
               {s.fallback && (
                 <>
                   <p className="text-sm text-zinc-500">{s.fallback.text}</p>
-                  <CodeBlock code={s.fallback.code} />
+                  {s.fallback.code && <CodeBlock code={s.fallback.code} />}
                 </>
               )}
               {s.fallback2 && <p className="text-sm text-zinc-500">{s.fallback2}</p>}
