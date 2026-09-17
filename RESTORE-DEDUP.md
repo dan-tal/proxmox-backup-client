@@ -59,6 +59,12 @@ losetup -d /dev/loopN        # abia acum loop-ul parinte se elibereaza efectiv
 losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"
 ```
 
+Normal ca ultima comandă (`losetup -d /dev/loopN`) să dea uneori
+`detach failed: No such device or address` — loop-ul părinte se
+auto-eliberează de îndată ce sub-loop-ul (loopM) e detașat, deci la
+momentul comenzii poate deja să nu mai existe. Nu e o eroare reală;
+verificarea finală (`losetup -a | grep pbs-loopdev`) e cea care contează.
+
 Dacă tot nu merge, poți oricând reporni containerul aplicației sau chiar
 VM-ul de recuperare complet — niciuna din operațiile de mai sus nu ține
 stare care să nu supraviețuiască unui restart:
