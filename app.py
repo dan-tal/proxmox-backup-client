@@ -1029,7 +1029,10 @@ def api_vm_download():
         # tehnica de diagnosticat) - afisam direct mesajul, fara zgomotul
         # celeilalte erori (extragerea normala, oricum irelevanta aici).
         if "deja mapata" in str(e):
-            return jsonify({"error": str(e).capitalize()}), 409
+            # NU .capitalize() - pe langa prima litera, face lowercase la tot
+            # restul textului (inclusiv URL-ul RESTORE-DEDUP.md din mesaj!).
+            msg = str(e)
+            return jsonify({"error": msg[0].upper() + msg[1:] if msg else msg}), 409
         return jsonify({
             "error": f"{primary_err or 'extragere esuata'}; fallback (montare directa) a esuat si el: {e}",
         }), 502

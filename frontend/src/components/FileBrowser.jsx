@@ -250,12 +250,12 @@ export default function FileBrowser({ snapshot, archive }) {
           <table className="w-full table-fixed text-sm">
             <thead className="sticky top-0 bg-zinc-950/95 text-left text-xs tracking-wide text-zinc-500 uppercase backdrop-blur">
               <tr>
-                <th className="px-4 py-2 font-medium">Nume</th>
-                <th className="w-24 px-2 py-2 text-right font-medium">Mărime</th>
-                <th className="hidden w-40 px-2 py-2 font-medium xl:table-cell">Modificat</th>
-                <th className="w-24 px-4 py-2">
+                <th className="w-16 px-2 py-2">
                   <span className="sr-only">Acțiuni</span>
                 </th>
+                <th className="px-2 py-2 font-medium">Nume</th>
+                <th className="w-24 px-2 py-2 text-right font-medium">Mărime</th>
+                <th className="hidden w-40 px-2 py-2 font-medium xl:table-cell">Modificat</th>
               </tr>
             </thead>
             <tbody>
@@ -302,7 +302,19 @@ function FileRow({ entry, onOpen, downloadUrl, onDownload }) {
 
   return (
     <tr className="group border-b border-zinc-900 hover:bg-zinc-900/70">
-      <td className="px-4 py-1.5">
+      <td className="px-2 py-1.5">
+        {entry.downloadable && (
+          <div className="flex gap-1 transition md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+            <button onClick={copyLink} title="Copiază link-ul de descărcare" className={iconBtn}>
+              <Icon name={copied ? "check" : "copy"} />
+            </button>
+            <button onClick={onDownload} title={entry.navigable ? "Descarcă ca ZIP" : "Descarcă"} className={iconBtn}>
+              <Icon name="download" />
+            </button>
+          </div>
+        )}
+      </td>
+      <td className="px-2 py-1.5">
         {entry.navigable ? (
           <button onClick={() => onOpen(entry)} className="flex w-full min-w-0 items-center gap-2.5 text-left hover:text-blue-300">
             {label}
@@ -313,18 +325,6 @@ function FileRow({ entry, onOpen, downloadUrl, onDownload }) {
       </td>
       <td className="px-2 py-1.5 text-right text-zinc-400 tabular-nums">{formatSize(entry.size)}</td>
       <td className="hidden px-2 py-1.5 text-zinc-500 tabular-nums xl:table-cell">{formatTime(entry.mtime)}</td>
-      <td className="px-4 py-1.5">
-        {entry.downloadable && (
-          <div className="flex justify-end gap-1 transition md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
-            <button onClick={copyLink} title="Copiază link-ul de descărcare" className={iconBtn}>
-              <Icon name={copied ? "check" : "copy"} />
-            </button>
-            <button onClick={onDownload} title={entry.navigable ? "Descarcă ca ZIP" : "Descarcă"} className={iconBtn}>
-              <Icon name="download" />
-            </button>
-          </div>
-        )}
-      </td>
     </tr>
   );
 }
