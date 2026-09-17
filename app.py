@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +36,8 @@ from pathlib import Path, PurePosixPath
 
 from flask import Flask, jsonify, request, send_file, abort, session
 from werkzeug.exceptions import HTTPException
+
+APP_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -102,6 +105,11 @@ FILE_RESTORE_TIMEOUT = 300  # primul apel pe un snapshot VM boot-eaza micro-VM-u
 VM_CHECK_ACCESS_TIMEOUT = 20  # doar pt /api/vm-check-access: raspuns rapid de diagnostic
 RESTORE_VM_MAX_AGE = 8 * 60  # secunde; peste varsta asta, VM-ul de restore e considerat orfan
 DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
+
+# Folosite doar ca sa generam instructiuni corecte in mesajul 409 de mai jos
+# (recuperare manuala prin VM Windows), nu in logica de extragere propriu-zisa.
+LXC_CTID = os.environ.get("PBS_LXC_CTID", "100")
+WINDOWS_RECOVERY_VMID = os.environ.get("WINDOWS_RECOVERY_VMID", "101")
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
 _lock = threading.Lock()
@@ -942,11 +950,21 @@ def api_vm_download():
 
     raw_target = mount_path / fs_path.lstrip("/")
     if raw_target.is_symlink() and not raw_target.exists():
-        repository = load_pbs_config().get("repository", "<repository>")
-        windows_vmid = os.environ.get("WINDOWS_RECOVERY_VMID", "<VMID_server3>")
-        map_cmd = f"proxmox-backup-client map {snapshot}:{archive} --repository {repository}"
-        qm_cmd = (f"qm set {windows_vmid} -scsiN /dev/loopN,ro=1  "
-                  f"# inlocuieste N si loopN cu urmatorul slot liber / device-ul intors de comanda de mai sus")
+        # Comanda trebuie rulata din host prin 'pct exec', nu direct cu
+        # --repository: proxmox-backup-client de pe host nu are acces la
+        # PBS_PASSWORD/PBS_FINGERPRINT din config.json (acelea exista doar
+        # ca env in acest proces Flask, vezi pbs_env()) - trebuie reexportate
+        # explicit in container. Delegam la un script din repo (nu la un
+        #'bash -c' cu snapshot/archive interpolate direct) ca sa evitam
+        # shell injection daca archive contine ghilimele/caractere speciale
+        # (archive vine din path-ul cerut de client, vezi parse_vm_disk_path).
+        recovery_script = APP_DIR / "scripts" / "pbs-map-for-recovery.py"
+        map_cmd = (
+            f"pct exec {LXC_CTID} -- python3 {shlex.quote(str(recovery_script))} "
+            f"{shlex.quote(snapshot)} {shlex.quote(archive)}"
+        )
+        qm_cmd = (f"qm set {WINDOWS_RECOVERY_VMID} --scsiN /dev/loopN,ro=1  "
+                  "# inlocuieste N cu un slot scsi liber si loopN cu device-ul din mesajul de mai sus")
         return jsonify({
             "error": (
                 "Fisierul e un reparse point NTFS fara date locale pe disc (foarte probabil "
@@ -954,11 +972,12 @@ def api_vm_download():
                 "backup, nu poate fi recuperat de aici prin extragere/montare Linux.\n\n"
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
-                "Ruleaza pe host (pveDan):\n\n"
+                "Procesul complet (deconectare VM, detasare disc vechi, cleanup) e in "
+                "RESTORE-DEDUP.md. Comenzile specifice acestui fisier, de rulat pe host (pveDan):\n\n"
                 f"1) {map_cmd}\n"
                 f"2) {qm_cmd}\n\n"
-                "Apoi, in Windows (VM-ul de recuperare), adu discul online read-only din Disk "
-                "Management si copiaza fisierul cu:\n"
+                "Apoi, in Windows (VM-ul de recuperare), adu discul online (fara Initialize!) din "
+                "Disk Management si copiaza fisierul cu:\n"
                 "robocopy <sursa> <destinatie> /B /E"
             ),
         }), 409

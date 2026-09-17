@@ -370,6 +370,10 @@ frontend/dist/           build-ul compilat, servit static de Flask (comitat in g
   clar (409), nu un fișier fals. Pentru fișiere deduplicate, singura
   soluție e atașarea discului la o VM Windows Server cu Data Deduplication
   instalat și copierea normală de acolo (Windows reasamblează transparent).
+  Mesajul 409 din GUI include deja comenzile exacte de rulat pe host pentru
+  fișierul respectiv; procedura completă pas cu pas (inclusiv deconectarea
+  de siguranță a VM-ului de recuperare de la rețea și cleanup) e în
+  [RESTORE-DEDUP.md](RESTORE-DEDUP.md).
 
   Fallback-ul are nevoie de acces la loop devices în container (vezi
   secțiunea 2 mai sus, blocul `loop-control`/`loop0-63`) și de pachetul

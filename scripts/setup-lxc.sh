@@ -318,6 +318,13 @@ Environment=APP_USERNAME=admin
 Environment=APP_PASSWORD=
 Environment=SECRET_KEY=
 Environment=ALLOWED_GROUPS=
+# CTID-ul acestui container si ID-ul VM-ului Windows de recuperare dedup -
+# folosite doar ca sa generam instructiuni corecte (comenzi pct/qm) in
+# mesajul de eroare cand un fisier e placeholder de Windows Data Dedup.
+# Ajusteaza daca CTID-ul containerului sau VM-ul de recuperare difera.
+# Vezi RESTORE-DEDUP.md.
+Environment=PBS_LXC_CTID=${CTID}
+Environment=WINDOWS_RECOVERY_VMID=101
 # LANG/LC_ALL: buna practica generala pentru un serviciu care manipuleaza
 # nume de fisiere UTF-8. NU rezolva descarcarea fisierelor cu diacritice din
 # discuri VM - e un bug separat, confirmat chiar in proxmox-file-restore
