@@ -110,13 +110,14 @@ DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
 # (recuperare manuala prin VM Windows), nu in logica de extragere propriu-zisa.
 LXC_CTID = os.environ.get("PBS_LXC_CTID", "100")
 WINDOWS_RECOVERY_VMID = os.environ.get("WINDOWS_RECOVERY_VMID", "101")
-# Link direct catre github, nu ruta locala /RESTORE-DEDUP.md - simplu, fara
-# nicio dependenta de routing-ul propriu al aplicatiei (care a dat 404 la
-# un test real, motiv neclar - static_folder cu static_url_path="" pare sa
-# intercepteze ruta, dar merita reinvestigat daca revine nevoia de link local).
-RESTORE_DEDUP_URL = os.environ.get(
-    "RESTORE_DEDUP_URL", "https://github.com/dan-tal/proxmox-backup-client/blob/master/RESTORE-DEDUP.md"
-)
+def restore_dedup_help_url():
+    """Link catre pagina interactiva din aplicatie (nu RESTORE-DEDUP.md static)
+    - genereaza comenzile live, cu CTID/VMID deja completate din config.
+    Baza URL e derivata din request.host_url (scheme/host cum a ajuns
+    cererea la Flask) - daca aplicatia ruleaza dupa un reverse proxy/TLS
+    terminator, seteaza APP_PUBLIC_URL explicit (ex: https://pbs.example.com)."""
+    base = os.environ.get("APP_PUBLIC_URL", "").rstrip("/") or request.host_url.rstrip("/")
+    return f"{base}/?dedupHelp=1&ctid={LXC_CTID}&vmid={WINDOWS_RECOVERY_VMID}"
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
 _lock = threading.Lock()
@@ -388,7 +389,7 @@ def get_disk_partition_mount(snapshot, archive, partition):
                     raise RuntimeError(
                         "arhiva e deja mapata (foarte probabil de la o sesiune de recuperare "
                         "manuala prin VM Windows, inca activa) - proxmox-backup-client refuza "
-                        f"sa mapeze aceeasi arhiva de doua ori. Vezi {RESTORE_DEDUP_URL}, "
+                        f"sa mapeze aceeasi arhiva de doua ori. Vezi {restore_dedup_help_url()}, "
                         "Pasul 1 (Reset complet), inainte sa reincerci."
                     )
                 raise RuntimeError(f"nu am gasit device-ul mapat in iesirea: {combined}")
@@ -1066,7 +1067,7 @@ def api_vm_download():
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
                 "Procesul complet (deconectare VM, detasare disc vechi, cleanup) e in "
-                f"{RESTORE_DEDUP_URL} . Comenzile specifice acestui "
+                f"{restore_dedup_help_url()} . Comenzile specifice acestui "
                 "fisier, de rulat pe host (pveDan):\n\n"
                 f"1) {map_cmd}\n"
                 f"2) {qm_cmd}\n\n"

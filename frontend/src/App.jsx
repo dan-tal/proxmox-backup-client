@@ -5,6 +5,7 @@ import FileBrowser from "./components/FileBrowser.jsx";
 import GroupList from "./components/GroupList.jsx";
 import Icon from "./components/Icon.jsx";
 import LoginForm from "./components/LoginForm.jsx";
+import RestoreDedupHelp from "./components/RestoreDedupHelp.jsx";
 import SettingsModal from "./components/SettingsModal.jsx";
 import SnapshotList from "./components/SnapshotList.jsx";
 import { Empty, ErrorBox, Loading } from "./components/Status.jsx";
@@ -74,6 +75,9 @@ function Workspace({ user, onLogout }) {
   const [snapshot, setSnapshot] = useState(null);
   const [archiveName, setArchiveName] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dedupHelpOpen, setDedupHelpOpen] = useState(
+    new URLSearchParams(window.location.search).get("dedupHelp") === "1",
+  );
 
   // Citit o singura data la montare (nu se schimba dupa) - starea din URL de
   // la deschidere, folosita doar pt restaurare, nu resincronizata continuu.
@@ -144,15 +148,9 @@ function Workspace({ user, onLogout }) {
           <p className="truncate text-xs text-zinc-500">Browsing și download read-only din backup-uri</p>
         </div>
         {user && <span className="hidden text-sm text-zinc-400 sm:inline">{user}</span>}
-        <a
-          href="https://github.com/dan-tal/proxmox-backup-client/blob/master/RESTORE-DEDUP.md"
-          target="_blank"
-          rel="noreferrer"
-          title="Recuperare manuală fișiere deduplicate (RESTORE-DEDUP.md)"
-          className={iconBtn}
-        >
+        <button onClick={() => setDedupHelpOpen(true)} title="Recuperare manuală fișiere deduplicate" className={iconBtn}>
           <Icon name="book" />
-        </a>
+        </button>
         <button onClick={() => setSettingsOpen(true)} title="Setări conexiune PBS" className={iconBtn}>
           <Icon name="settings" />
         </button>
@@ -164,6 +162,22 @@ function Workspace({ user, onLogout }) {
       </header>
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {dedupHelpOpen && (
+        <RestoreDedupHelp
+          onClose={() => {
+            setDedupHelpOpen(false);
+            // fara asta, un refresh/bookmark pe link-ul ?dedupHelp=1 din
+            // eroarea 409 redeschide modalul de fiecare data, chiar dupa ce
+            // userul l-a inchis explicit.
+            const params = new URLSearchParams(window.location.search);
+            params.delete("dedupHelp");
+            params.delete("ctid");
+            params.delete("vmid");
+            const qs = params.toString();
+            window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+          }}
+        />
+      )}
 
       <main className="grid min-h-0 flex-1 grid-rows-1 lg:grid-cols-[17rem_19rem_1fr] lg:divide-x lg:divide-zinc-800">
         <section className={pane("groups")}>
