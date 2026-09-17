@@ -83,6 +83,27 @@ function Workspace({ user, onLogout }) {
   // la deschidere, folosita doar pt restaurare, nu resincronizata continuu.
   const [initialParams] = useState(() => new URLSearchParams(window.location.search));
 
+  // Link-ul spre pagina de recuperare dedup din ErrorBox (Status.jsx)
+  // deschide modalul direct aici, fara sa navigheze intr-un tab nou -
+  // adaugam parametrii lui peste URL-ul curent (fara sa stergem navigarea
+  // deja persistata: group/snapshot/archive/path).
+  useEffect(() => {
+    const handler = (e) => {
+      const target = new URL(e.detail);
+      const params = new URLSearchParams(window.location.search);
+      for (const [k, v] of target.searchParams) params.set(k, v);
+      // replaceState, nu pushState - restul aplicatiei (group/snapshot/
+      // archive/path) foloseste doar replaceState, fara sa creeze intrari
+      // noi in istoric; niciun handler 'popstate' nu exista nicaieri, deci
+      // pushState ar lasa Back sa schimbe URL-ul fara sa resincronizeze
+      // starea React (modalul ar ramane deschis, desincronizat de URL).
+      window.history.replaceState(null, "", `?${params.toString()}`);
+      setDedupHelpOpen(true);
+    };
+    window.addEventListener("pbs:open-dedup-help", handler);
+    return () => window.removeEventListener("pbs:open-dedup-help", handler);
+  }, []);
+
   const groups = useResource(() => api.groups(), []);
   const snapshots = useResource(group ? () => api.snapshots(group.group) : null, [group?.group]);
 

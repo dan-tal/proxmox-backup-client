@@ -23,9 +23,26 @@ function linkify(text) {
     // propozitiei, nu URL-ului - altfel apare in link ("...RESTORE-DEDUP.md,")
     const trailing = part.match(/[.,;:!?)]+$/)?.[0] || "";
     const url = trailing ? part.slice(0, -trailing.length) : part;
+    // Link-ul spre pagina de recuperare dedup e chiar aplicatia asta - il
+    // deschidem ca modal in pagina curenta (eveniment global), nu ca tab nou
+    // separat (unde, daca il inchizi din greseala, pierzi navigarea din
+    // tab-ul original - exact ce s-a intamplat).
+    const isDedupHelp = url.startsWith(window.location.origin) && url.includes("dedupHelp=1");
+    const onClick = isDedupHelp
+      ? (e) => {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("pbs:open-dedup-help", { detail: url }));
+        }
+      : undefined;
     return (
       <span key={i}>
-        <a href={url} target="_blank" rel="noreferrer" className="underline hover:text-red-200">
+        <a
+          href={url}
+          target={isDedupHelp ? undefined : "_blank"}
+          rel="noreferrer"
+          onClick={onClick}
+          className="underline hover:text-red-200"
+        >
           {url}
         </a>
         {trailing}
