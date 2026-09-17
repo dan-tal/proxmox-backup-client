@@ -9,11 +9,30 @@ export function Loading({ label = "Se încarcă..." }) {
   );
 }
 
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+
+// Sparge mesajul in bucati text/link ca sa afisam URL-urile ca <a> clickabil
+// (ex: linkul catre RESTORE-DEDUP.md din eroarea 409 la fisiere deduplicate).
+function linkify(text) {
+  // split cu regex cu grup de captura intercaleaza [text, url, text, url, ...]
+  // - indexii impari sunt mereu URL-urile capturate (nu refolosim regex-ul
+  // global cu .test() aici, ca sa evitam bug-ul clasic de lastIndex statefull)
+  return text.split(URL_RE).map((part, i) =>
+    i % 2 === 1 ? (
+      <a key={i} href={part} target="_blank" rel="noreferrer" className="underline hover:text-red-200">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  );
+}
+
 export function ErrorBox({ message, onRetry }) {
   return (
     <div className="m-3 flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
       <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
-      <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">{message}</p>
+      <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">{linkify(message)}</p>
       {onRetry && (
         <button onClick={onRetry} className="shrink-0 text-xs font-medium hover:underline">
           Reîncearcă

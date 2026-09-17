@@ -1041,7 +1041,8 @@ def api_vm_download():
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
                 "Procesul complet (deconectare VM, detasare disc vechi, cleanup) e in "
-                "RESTORE-DEDUP.md. Comenzile specifice acestui fisier, de rulat pe host (pveDan):\n\n"
+                f"{request.host_url.rstrip('/')}/RESTORE-DEDUP.md . Comenzile specifice acestui "
+                "fisier, de rulat pe host (pveDan):\n\n"
                 f"1) {map_cmd}\n"
                 f"2) {qm_cmd}\n\n"
                 "Apoi, in Windows (VM-ul de recuperare), adu discul online (fara Initialize!) din "
@@ -1063,6 +1064,14 @@ def api_vm_download():
         return send_and_cleanup(zip_path, download_name, fb_workdir)
 
     return send_file(target, as_attachment=True, download_name=download_name)
+
+
+@app.route("/RESTORE-DEDUP.md")
+def restore_dedup_doc():
+    # Servit direct de aplicatie (nu doar link catre GitHub) ca sa fie
+    # mereu in sync cu ce ruleaza efectiv, si accesibil chiar daca VM-ul de
+    # recuperare e deconectat de la internet (vezi RESTORE-DEDUP.md, pasul 2).
+    return send_file(APP_DIR / "RESTORE-DEDUP.md", mimetype="text/plain; charset=utf-8")
 
 
 @app.route("/")
