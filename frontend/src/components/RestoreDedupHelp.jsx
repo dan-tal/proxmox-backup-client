@@ -33,9 +33,19 @@ function shQuote(s) {
   return `'${String(s).replace(/'/g, "'\\''")}'`;
 }
 
+// Calea (relativa la radacina partitiei) a folderului sursa pt robocopy -
+// daca fisierul curent e un folder, folosim calea intreaga; daca e un
+// fisier, folosim folderul lui parinte (fara ultimul segment).
+function robocopySourcePath(path, isDir) {
+  if (!path) return null;
+  const segments = path.replace(/^\/+/, "").split("/").filter(Boolean);
+  const dirSegments = isDir ? segments : segments.slice(0, -1);
+  return dirSegments.join("\\");
+}
+
 // Genereaza aceleasi comenzi ca in RESTORE-DEDUP.md (repo), dar cu CTID/VMID
 // completate din inputurile de mai jos, nu ca text static de copiat manual.
-function buildSteps(ctid, vmid, snapshot, archive) {
+function buildSteps(ctid, vmid, snapshot, archive, path, isDir) {
   return [
     {
       title: "Pasul 1 — Reset complet (obligatoriu, de fiecare dată, înainte de orice disc nou)",
@@ -96,17 +106,22 @@ qm set ${vmid} --scsi1 "$DEV",ro=1`,
     {
       title: "Pasul 4 — În Windows: adu discul online și copiază fișierul",
       text: "Dacă VM-ul rula deja, discul nou poate să nu apară imediat (hot-add PCIe nu mereu e detectat automat):",
-      code: `pnputil /scan-devices
-Get-Disk`,
+      code: `pnputil /scan-devices`,
       extra: {
-        text: "Dacă tot nu apare, Restart-Computer (e VM-ul de recuperare, fără risc). Identifică discul nou, apoi:",
-        code: `Set-Disk -Number N -IsOffline $false    # NICIODATA Initialize! e un disc NTFS existent
-Get-Disk -Number N | Get-Partition | Get-Volume`,
+        text: "Apoi rulează, ca Administrator - identifică singur discul nou (cel mai mare Number, presupune un singur disc de recuperare atașat, așa cum garantează Pasul 1), îl aduce online dacă e nevoie, și găsește litera de drive (NICIODATA Initialize! e un disc NTFS existent):",
+        code: `$disk = Get-Disk | Sort-Object Number -Descending | Select-Object -First 1
+Write-Host "Disc gasit: Number $($disk.Number), $([math]::Round($disk.Size/1GB)) GB, $($disk.OperationalStatus)"
+if ($disk.OperationalStatus -eq "Offline") { Set-Disk -Number $disk.Number -IsOffline $false }
+$vol = $disk | Get-Partition | Get-Volume | Where-Object { $_.DriveLetter } | Select-Object -First 1
+Write-Host "Litera de drive: $($vol.DriveLetter):"`,
       },
       extra2: {
-        text: "ACL-urile din domeniul original pot bloca Get-ChildItem/Copy-Item (Access Denied) — nu schimba ownership/ACL (ar scrie pe un disc intenționat read-only). Folosește robocopy cu /B (Backup mode, bypass ACL prin SeBackupPrivilege):",
-        code: `New-Item -ItemType Directory -Path C:\\Recuperat -Force
-robocopy "<folder-sursa-pe-discul-nou>" "C:\\Recuperat" /B /E`,
+        text: "ACL-urile din domeniul original pot bloca Get-ChildItem/Copy-Item (Access Denied) — nu schimba ownership/ACL (ar scrie pe un disc intenționat read-only). Folosește robocopy cu /B (Backup mode, bypass ACL prin SeBackupPrivilege) - dacă ai rulat comanda de mai sus în aceeași sesiune PowerShell, $vol e deja definit:",
+        code: path
+          ? `New-Item -ItemType Directory -Path C:\\Recuperat -Force
+robocopy "$($vol.DriveLetter):\\${robocopySourcePath(path, isDir === "1")}" "C:\\Recuperat" /B /E`
+          : `New-Item -ItemType Directory -Path C:\\Recuperat -Force
+robocopy "$($vol.DriveLetter):\\<folder-sursa>" "C:\\Recuperat" /B /E`,
       },
     },
     {
@@ -130,7 +145,9 @@ export default function RestoreDedupHelp({ onClose }) {
   const [vmid, setVmid] = useState(params.get("vmid") || "101");
   const snapshot = params.get("dedupSnapshot");
   const archive = params.get("dedupArchive");
-  const steps = buildSteps(ctid.trim() || "100", vmid.trim() || "101", snapshot, archive);
+  const path = params.get("dedupPath");
+  const isDir = params.get("dedupIsDir");
+  const steps = buildSteps(ctid.trim() || "100", vmid.trim() || "101", snapshot, archive, path, isDir);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>

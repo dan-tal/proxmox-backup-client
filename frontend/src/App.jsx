@@ -175,6 +175,8 @@ function Workspace({ user, onLogout }) {
             params.delete("vmid");
             params.delete("dedupSnapshot");
             params.delete("dedupArchive");
+            params.delete("dedupPath");
+            params.delete("dedupIsDir");
             const qs = params.toString();
             window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
           }}

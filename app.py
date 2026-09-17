@@ -110,10 +110,11 @@ DISK_MAP_TIMEOUT = 30  # secunde pt 'proxmox-backup-client map'
 # (recuperare manuala prin VM Windows), nu in logica de extragere propriu-zisa.
 LXC_CTID = os.environ.get("PBS_LXC_CTID", "100")
 WINDOWS_RECOVERY_VMID = os.environ.get("WINDOWS_RECOVERY_VMID", "101")
-def restore_dedup_help_url(snapshot=None, archive=None):
+def restore_dedup_help_url(snapshot=None, archive=None, fs_path=None, is_dir=False):
     """Link catre pagina interactiva din aplicatie (nu RESTORE-DEDUP.md static)
     - genereaza comenzile live, cu CTID/VMID deja completate din config, si
-    (daca sunt date) comenzile specifice fisierului curent (snapshot+archive).
+    (daca sunt date) comenzile specifice fisierului curent (snapshot+archive+
+    calea in partitie, ca sa poata genera si comanda robocopy gata completata).
     Baza URL e derivata din request.host_url (scheme/host cum a ajuns
     cererea la Flask) - daca aplicatia ruleaza dupa un reverse proxy/TLS
     terminator, seteaza APP_PUBLIC_URL explicit (ex: https://pbs.example.com)."""
@@ -125,6 +126,9 @@ def restore_dedup_help_url(snapshot=None, archive=None):
         params["dedupSnapshot"] = snapshot
     if archive:
         params["dedupArchive"] = archive
+    if fs_path:
+        params["dedupPath"] = fs_path
+        params["dedupIsDir"] = "1" if is_dir else "0"
     return f"{base}/?{urlencode(params)}"
 
 _mounts = {}  # key: (snapshot, archive) -> {"path": Path, "last_used": float}
@@ -1086,7 +1090,7 @@ def api_vm_download():
                 "Singura solutie: ataseaza discul acestui snapshot read-only pe o VM Windows "
                 "Server cu rolul Data Deduplication instalat, care il rehidrateaza transparent. "
                 "Comenzile exacte (deja completate pt acest fisier) sunt in pagina de recuperare "
-                f"din aplicatie: {restore_dedup_help_url(snapshot, archive)}"
+                f"din aplicatie: {restore_dedup_help_url(snapshot, archive, fs_path, is_dir)}"
             ),
         }), 409
 
