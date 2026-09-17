@@ -39,6 +39,7 @@ export const api = {
   browseVm: (snapshot, path) => request(`/api/vm-browse?${qs({ snapshot, path })}`),
   downloadVmUrl: (snapshot, path, kind) => `/api/vm-download?${qs({ snapshot, path, kind })}`,
   checkVmAccess: (snapshot) => request(`/api/vm-check-access?${qs({ snapshot })}`),
+  dedupSearch: (snapshot, path) => request(`/api/vm-dedup-search?${qs({ snapshot, path })}`),
 
   pbsConfig: () => request("/api/pbs-config"),
   savePbsConfig: (repository, password, fingerprint) =>

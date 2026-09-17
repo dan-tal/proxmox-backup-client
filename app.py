@@ -885,6 +885,70 @@ def api_vm_browse():
     return jsonify({"path": path, "entries": out})
 
 
+DEDUP_SEARCH_TIMEOUT = 60  # secunde; volumul poate fi mare (100GB+) prin ntfs-3g/FUSE
+DEDUP_SEARCH_MAX_MATCHES = 20
+
+
+@app.route("/api/vm-dedup-search")
+def api_vm_dedup_search():
+    """Cauta pe toata partitia (nu doar in folderul curent) alte fisiere cu
+    acelasi nume ca cel deduplicat - poate exista o copie nededuplicata in
+    alta locatie de pe acelasi disc (folder de arhiva, copie manuala etc.)."""
+    snapshot = request.args.get("snapshot")
+    path = request.args.get("path")
+    require_snapshot(snapshot)
+    if not path or path == "/":
+        abort(400, "selecteaza un fisier din disc")
+    raw = require_vm_path(path)
+
+    parsed = parse_vm_disk_path(raw)
+    if parsed is None:
+        return jsonify({"error": "structura path-ului nu permite cautare pe disc"}), 400
+    archive, partition, fs_path = parsed
+
+    try:
+        mount_path = get_disk_partition_mount(snapshot, archive, partition)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 502
+
+    target_rel = fs_path.lstrip("/")
+    target_name_lower = PurePosixPath(fs_path).name.lower()
+
+    matches = []
+    start = time.time()
+    timed_out = False
+    for root, _dirs, files in os.walk(mount_path):
+        if time.time() - start > DEDUP_SEARCH_TIMEOUT:
+            timed_out = True
+            break
+        for i, fname in enumerate(files):
+            # verificam timeout-ul si in interiorul directorului, nu doar
+            # intre directoare - un singur folder poate avea sute de mii de
+            # fisiere (plauzibil pe un share Windows dedup-uit)
+            if i % 500 == 0 and time.time() - start > DEDUP_SEARCH_TIMEOUT:
+                timed_out = True
+                break
+            if fname.lower() != target_name_lower:
+                continue
+            fpath = Path(root) / fname
+            rel = fpath.relative_to(mount_path).as_posix()
+            if rel == target_rel:
+                continue  # fisierul original, deja stim ca e placeholder
+            is_placeholder = fpath.is_symlink() and not fpath.exists()
+            try:
+                size = None if is_placeholder else fpath.stat().st_size
+            except OSError:
+                continue
+            encoded_path = base64.b64encode(f"{archive}/part/{partition}/{rel}".encode()).decode()
+            matches.append({"rel_path": rel, "path": encoded_path, "is_placeholder": is_placeholder, "size": size})
+            if len(matches) >= DEDUP_SEARCH_MAX_MATCHES:
+                break
+        if timed_out or len(matches) >= DEDUP_SEARCH_MAX_MATCHES:
+            break
+
+    return jsonify({"matches": matches, "timed_out": timed_out})
+
+
 @app.route("/api/vm-download")
 def api_vm_download():
     snapshot = request.args.get("snapshot")

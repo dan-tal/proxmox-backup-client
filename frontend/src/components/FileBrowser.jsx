@@ -44,6 +44,7 @@ const MODES = {
     },
     downloadUrl: (snapshot, _archive, entry) =>
       api.downloadVmUrl(snapshot, entry.ref, entry.navigable ? "dir" : "file"),
+    dedupSearch: true,
   },
 };
 
@@ -58,7 +59,7 @@ async function triggerDownload(url, filename, setError) {
   try {
     res = await fetch(url);
   } catch (e) {
-    setError(`Nu s-a putut contacta serverul: ${e.message}`);
+    setError({ message: `Nu s-a putut contacta serverul: ${e.message}` });
     return;
   }
   if (!res.ok) {
@@ -69,7 +70,7 @@ async function triggerDownload(url, filename, setError) {
     } catch {
       // raspuns non-JSON, pastram mesajul generic
     }
-    setError(message);
+    setError({ message, status: res.status });
     return;
   }
   const blob = await res.blob();
@@ -90,6 +91,8 @@ export default function FileBrowser({ snapshot, archive }) {
   ]);
   const [query, setQuery] = useState("");
   const [downloadError, setDownloadError] = useState(null);
+  const [dedupTarget, setDedupTarget] = useState(null); // entry al carui download a dat 409
+  const [dedupResult, setDedupResult] = useState(null); // { loading, matches, timedOut, error }
   const current = trail[trail.length - 1];
   const atRoot = trail.length === 1;
 
@@ -112,6 +115,26 @@ export default function FileBrowser({ snapshot, archive }) {
     setTrail((t) => t.slice(0, index + 1));
   };
   const downloadUrl = (entry) => mode.downloadUrl(snapshot, archive.filename, entry);
+
+  const handleFileDownload = async (entry, filename) => {
+    setDedupTarget(null);
+    setDedupResult(null);
+    await triggerDownload(downloadUrl(entry), filename, (err) => {
+      setDownloadError(err);
+      if (err && err.status === 409 && mode.dedupSearch) setDedupTarget(entry);
+    });
+  };
+
+  const searchDedup = async () => {
+    if (!dedupTarget) return;
+    setDedupResult({ loading: true });
+    try {
+      const data = await api.dedupSearch(snapshot, dedupTarget.ref);
+      setDedupResult({ loading: false, matches: data.matches, timedOut: data.timed_out });
+    } catch (e) {
+      setDedupResult({ loading: false, error: e.message });
+    }
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -162,7 +185,65 @@ export default function FileBrowser({ snapshot, archive }) {
         {listing.loading && <Loading label={mode.loadingHint} />}
         {listing.error && <ErrorBox message={listing.error} onRetry={listing.reload} />}
         {downloadError && (
-          <ErrorBox message={downloadError} onRetry={() => setDownloadError(null)} />
+          <div className="border-b border-zinc-800">
+            <ErrorBox
+              message={downloadError.message}
+              onRetry={() => {
+                setDownloadError(null);
+                setDedupTarget(null);
+                setDedupResult(null);
+              }}
+            />
+            {dedupTarget && (
+              <div className="px-4 pb-3">
+                <button onClick={searchDedup} disabled={dedupResult?.loading} className={primaryBtn}>
+                  <Icon name="search" />
+                  {dedupResult?.loading ? "Caut pe disc..." : `Caută alte copii ale „${dedupTarget.name}” pe disc`}
+                </button>
+                {dedupResult?.error && (
+                  <p className="mt-2 text-sm text-red-400">Eroare la căutare: {dedupResult.error}</p>
+                )}
+                {dedupResult?.matches && (
+                  <div className="mt-2 text-sm">
+                    {dedupResult.matches.length === 0 ? (
+                      <p className="text-zinc-400">
+                        Nicio altă copie găsită pe partiție{dedupResult.timedOut ? " (căutare oprită la timeout, poate mai există)" : ""}.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {dedupResult.matches.map((m) => (
+                          <li key={m.path} className="flex items-center justify-between gap-2 rounded bg-zinc-900 px-2 py-1">
+                            <span className="truncate text-zinc-300" title={m.rel_path}>
+                              /{m.rel_path}
+                            </span>
+                            {m.is_placeholder ? (
+                              <span className="shrink-0 text-zinc-500">tot deduplicat</span>
+                            ) : (
+                              <span className="flex shrink-0 items-center gap-2">
+                                <span className="text-zinc-500">{formatSize(m.size)}</span>
+                                <button
+                                  className={iconBtn}
+                                  title="Descarcă această copie"
+                                  onClick={() =>
+                                    triggerDownload(api.downloadVmUrl(snapshot, m.path, "file"), dedupTarget.name, setDownloadError)
+                                  }
+                                >
+                                  <Icon name="download" />
+                                </button>
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {dedupResult.timedOut && dedupResult.matches.length > 0 && (
+                      <p className="mt-1 text-zinc-500">(căutare oprită la timeout, pot exista și altele)</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
         {listing.data && entries.length === 0 && <Empty>{query ? "Nicio potrivire" : "Director gol"}</Empty>}
         {entries.length > 0 && (
@@ -185,11 +266,7 @@ export default function FileBrowser({ snapshot, archive }) {
                   onOpen={open}
                   downloadUrl={downloadUrl(entry)}
                   onDownload={() =>
-                    triggerDownload(
-                      downloadUrl(entry),
-                      entry.navigable ? `${entry.name}.zip` : entry.name,
-                      setDownloadError,
-                    )
+                    handleFileDownload(entry, entry.navigable ? `${entry.name}.zip` : entry.name)
                   }
                 />
               ))}
