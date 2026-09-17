@@ -31,6 +31,12 @@ function shQuote(s) {
   return `'${String(s).replace(/'/g, "'\\''")}'`;
 }
 
+// Citare pt PowerShell (sintaxa de escapare diferita de POSIX - backtick,
+// nu backslash) - folosita pt numele de fisier in comanda robocopy.
+function psQuote(s) {
+  return `"${String(s).replace(/`/g, "``").replace(/"/g, '`"')}"`;
+}
+
 // Calea (relativa la radacina partitiei) a folderului sursa pt robocopy -
 // daca fisierul curent e un folder, folosim calea intreaga; daca e un
 // fisier, folosim folderul lui parinte (fara ultimul segment).
@@ -39,6 +45,14 @@ function robocopySourcePath(path, isDir) {
   const segments = path.replace(/^\/+/, "").split("/").filter(Boolean);
   const dirSegments = isDir ? segments : segments.slice(0, -1);
   return dirSegments.join("\\");
+}
+
+// Pt un singur fisier (nu folder), numele lui - trecut ca filtru la robocopy
+// ca sa copieze DOAR fisierul respectiv, nu tot folderul parinte recursiv.
+function robocopyFileName(path, isDir) {
+  if (!path || isDir) return null;
+  const segments = path.replace(/^\/+/, "").split("/").filter(Boolean);
+  return segments[segments.length - 1] || null;
 }
 
 // Genereaza aceleasi comenzi ca in RESTORE-DEDUP.md (repo), dar cu CTID/VMID
@@ -114,10 +128,16 @@ $vol = $disk | Get-Partition | Get-Volume | Where-Object { $_.DriveLetter } | Se
 Write-Host "Litera de drive: $($vol.DriveLetter):"`,
       },
       extra2: {
-        text: "ACL-urile din domeniul original pot bloca Get-ChildItem/Copy-Item (Access Denied) — nu schimba ownership/ACL (ar scrie pe un disc intenționat read-only). Folosește robocopy cu /B (Backup mode, bypass ACL prin SeBackupPrivilege) - dacă ai rulat comanda de mai sus în aceeași sesiune PowerShell, $vol e deja definit:",
+        text:
+          path && isDir !== "1"
+            ? "ACL-urile din domeniul original pot bloca Get-ChildItem/Copy-Item (Access Denied) — nu schimba ownership/ACL (ar scrie pe un disc intenționat read-only). Folosește robocopy cu /B (Backup mode, bypass ACL prin SeBackupPrivilege) - fără /E, doar fișierul cerut (nu tot folderul), dacă ai rulat comanda de mai sus în aceeași sesiune PowerShell, $vol e deja definit:"
+            : "ACL-urile din domeniul original pot bloca Get-ChildItem/Copy-Item (Access Denied) — nu schimba ownership/ACL (ar scrie pe un disc intenționat read-only). Folosește robocopy cu /B (Backup mode, bypass ACL prin SeBackupPrivilege) - dacă ai rulat comanda de mai sus în aceeași sesiune PowerShell, $vol e deja definit:",
         code: path
-          ? `New-Item -ItemType Directory -Path C:\\Recuperat -Force
-robocopy "$($vol.DriveLetter):\\${robocopySourcePath(path, isDir === "1")}" "C:\\Recuperat" /B /E`
+          ? isDir === "1"
+            ? `New-Item -ItemType Directory -Path C:\\Recuperat -Force
+robocopy "$($vol.DriveLetter):\\${robocopySourcePath(path, true)}" "C:\\Recuperat" /B /E`
+            : `New-Item -ItemType Directory -Path C:\\Recuperat -Force
+robocopy "$($vol.DriveLetter):\\${robocopySourcePath(path, false)}" "C:\\Recuperat" ${psQuote(robocopyFileName(path, false))} /B`
           : `New-Item -ItemType Directory -Path C:\\Recuperat -Force
 robocopy "$($vol.DriveLetter):\\<folder-sursa>" "C:\\Recuperat" /B /E`,
       },
