@@ -40,7 +40,7 @@ function buildSteps(ctid, vmid, snapshot, archive) {
     {
       title: "Pasul 1 — Reset complet (obligatoriu, de fiecare dată, înainte de orice disc nou)",
       text: "Nu conta pe ce a rămas de la o recuperare anterioară — proxmox-backup-client refuză să mapeze a doua oară aceeași arhivă dacă a rămas ceva activ. Rulează pe host (pveDan):",
-      code: `# 1) detaseaza orice disc de backup (/dev/loopN) de la VM-ul de recuperare
+      code: `# 1) detaseaza orice disc de backup (/dev/loopX) de la VM-ul de recuperare
 qm config ${vmid} | grep -oP '^scsi\\d+(?=: /dev/loop)' | while read -r slot; do
   echo "detasez $slot de la VM ${vmid}"
   qm set ${vmid} --delete "$slot"
@@ -59,10 +59,10 @@ pct exec ${ctid} -- systemctl restart pbs-restore
 losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"
 qm config ${vmid} | grep -i scsi || echo "curat, niciun disc atasat"`,
       extra: {
-        text: "Dacă un /dev/loopN refuză să se elibereze (mesaj \"found mapping with dead process\" sau un sub-loop de partiție încă îl ține ocupat):",
-        code: `pct exec ${ctid} -- losetup -a   # cauta un loop cu "(/dev/loopN)" ca backing - e un sub-loop de partitie
+        text: "Dacă un /dev/loopX refuză să se elibereze (mesaj \"found mapping with dead process\" sau un sub-loop de partiție încă îl ține ocupat):",
+        code: `pct exec ${ctid} -- losetup -a   # cauta un loop cu "(/dev/loopX)" ca backing - e un sub-loop de partitie
 pct exec ${ctid} -- losetup -d /dev/loopM   # sub-loop-ul gasit mai sus, DACA exista - detaseaza-l primul
-losetup -d /dev/loopN        # abia acum loop-ul parinte se elibereaza efectiv
+losetup -d /dev/loopX        # abia acum loop-ul parinte se elibereaza efectiv
 losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"`,
       },
       fallback: {
@@ -82,8 +82,8 @@ qm stop ${vmid}        # VM-ul de recuperare, daca era pornit cu discul atasat`,
           text: `Comenzi pentru fișierul curent (snapshot ${snapshot}, arhivă ${archive}) - rulează pe host, în ordine:`,
           code: `pct exec ${ctid} -- python3 /opt/pbs-restore/scripts/pbs-map-for-recovery.py ${shQuote(snapshot)} ${shQuote(archive)}`,
           extra: {
-            text: "Notează /dev/loopN din mesaj (tipărit pe stderr), apoi rulează (rezultatul: disc nou atașat la VM, read-only — niciodată nu scriem pe datele din backup):",
-            code: `qm set ${vmid} --scsi1 /dev/loopN,ro=1  # inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, si '/dev/loopN' cu device-ul EXACT de mai sus`,
+            text: "Notează /dev/loopX din mesaj (tipărit pe stderr), apoi rulează (rezultatul: disc nou atașat la VM, read-only — niciodată nu scriem pe datele din backup):",
+            code: `qm set ${vmid} --scsi1 /dev/loopX,ro=1  # inlocuieste 'scsi1' cu un slot liber DOAR daca e deja ocupat, si '/dev/loopX' cu device-ul EXACT de mai sus`,
           },
         }
       : {
@@ -113,7 +113,7 @@ robocopy "<folder-sursa-pe-discul-nou>" "C:\\Recuperat" /B /E`,
       extra: {
         text: "Apoi pe host:",
         code: `qm set ${vmid} --delete scsi1
-pct exec ${ctid} -- proxmox-backup-client unmap /dev/loopN
+pct exec ${ctid} -- proxmox-backup-client unmap /dev/loopX
 qm set ${vmid} --net0 <net-config-curent>   # scoate link_down=1, reconecteaza reteaua`,
       },
       fallback2: "Pentru următorul fișier/disc de recuperat, reia de la Pasul 1 (reset complet) — nu sări direct la Pasul 3.",
