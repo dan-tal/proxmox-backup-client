@@ -223,6 +223,32 @@ done
 LOOP_CONTROL_MAJMIN=$(device_majmin /dev/loop-control)
 msg_ok "Devices loop detectate: loop-control=$LOOP_CONTROL_MAJMIN, loop0-$((LOOP_RANGE - 1)) pregatite"
 
+# Nodurile de mai sus sunt pe devtmpfs si NU supravietuiesc unui reboot al
+# host-ului (doar cele efectiv alocate de kernel la un moment dat reapar
+# automat - confirmat: dupa un reboot au ramas doar loop0-9). Fara ele,
+# bind-mount-urile 'optional' de mai jos pica silentios la pornirea
+# containerului (LXC creeaza fisiere goale in loc), iar fallback-ul din
+# aplicatie esueaza cu "Inappropriate ioctl for device" cand alege un index
+# de loop lipsa. Serviciu systemd pe HOST care le recreeaza la fiecare boot,
+# inainte sa porneasca containerele.
+cat > /etc/systemd/system/pbs-restore-loop-devices.service <<UNIT
+[Unit]
+Description=Precreeaza /dev/loop0-$((LOOP_RANGE - 1)) pt passthrough LXC pbs-restore
+DefaultDependencies=no
+Before=pve-container@${CTID}.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for i in \$(seq 0 $((LOOP_RANGE - 1))); do [ -e /dev/loop\$i ] || mknod /dev/loop\$i b 7 \$i; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now pbs-restore-loop-devices.service
+msg_ok "Serviciu pbs-restore-loop-devices instalat (recreeaza loop0-$((LOOP_RANGE - 1)) la fiecare boot al host-ului)"
+
 # Curat orice bloc de passthrough adaugat anterior (idempotent), apoi il
 # reinserez ÎNAINTE de orice sectiune de snapshot ("[nume]") - daca ar
 # ajunge dupa, Proxmox l-ar atribui snapshot-ului, nu config-ului live.

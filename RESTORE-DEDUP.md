@@ -12,9 +12,48 @@ Deduplication** instalat (implicit VM ID `101`, container LXC al aplicației
 `PBS_LXC_CTID` în serviciul systemd `pbs-restore`, vezi README secțiunea
 Deploy).
 
-## 0. Verifică dacă VM-ul de recuperare are deja ceva atașat
+## 0. Reset complet (rulează oricând ceva pare blocat)
 
-Rulează pe host (`pveDan`):
+Dacă nu ești sigur în ce stare a rămas ceva de la o încercare anterioară
+(disc încă atașat la VM, mapare `proxmox-backup-client` încă activă, stare
+internă a aplicației încurcată), cel mai simplu e să resetezi tot înainte
+să începi o recuperare nouă. Rulează pe host (`pveDan`) — sigur, indiferent
+ce era atașat:
+
+```bash
+# 1) detaseaza orice disc de backup (/dev/loopN) de la VM-ul de recuperare
+qm config 101 | grep -oP '^scsi\d+(?=: /dev/loop)' | while read -r slot; do
+  echo "detasez $slot de la VM 101"
+  qm set 101 --delete "$slot"
+done
+
+# 2) elibereaza toate mapping-urile proxmox-backup-client active in container
+pct exec 100 -- bash -c "losetup -a | grep -oP '^/dev/loop\d+(?=: .*pbs-loopdev)'" | while read -r dev; do
+  echo "unmap $dev"
+  pct exec 100 -- proxmox-backup-client unmap "$dev"
+done
+
+# 3) reseteaza starea interna a aplicatiei (harta de mount-uri din memorie)
+pct exec 100 -- systemctl restart pbs-restore
+
+# verificare finala - ar trebui sa nu ramana nimic din pbs-loopdev
+losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"
+qm config 101 | grep -i scsi || echo "curat, niciun disc atasat"
+```
+
+Dacă tot nu merge (de ex. un `/dev/loopN` refuză să se elibereze), poți
+oricând reporni containerul aplicației sau chiar VM-ul de recuperare complet
+— niciuna din operațiile de mai sus nu ține stare care să nu supraviețuiască
+unui restart:
+
+```bash
+pct reboot 100     # containerul aplicatiei
+qm stop 101        # VM-ul de recuperare, daca era pornit cu discul atasat
+```
+
+## 0b. Verifică dacă VM-ul de recuperare are deja ceva atașat
+
+Dacă nu ai făcut reset-ul complet de mai sus, verifică măcar atât:
 
 ```bash
 qm config 101 | grep -i scsi

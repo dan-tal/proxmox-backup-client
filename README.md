@@ -129,6 +129,35 @@ din container eșuează:
 for i in $(seq 0 63); do [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i"; done
 ```
 
+**Important**: nodurile astea sunt pe `devtmpfs` și **nu supraviețuiesc unui
+reboot al host-ului** — doar cele efectiv alocate de kernel la un moment dat
+reapar automat (confirmat: după un reboot au rămas doar `loop0-9`, restul
+dispărute). Fără ele, bind-mount-urile `optional` de mai jos pică silențios
+la pornirea containerului (LXC creează fișiere goale în loc), iar fallback-ul
+eșuează cu `losetup: ... failed to set up loop device: Inappropriate ioctl
+for device`. Instalează un serviciu systemd pe host care le recreează la
+fiecare boot, înainte să pornească containerele (`scripts/setup-lxc.sh` face
+asta automat):
+
+```bash
+cat > /etc/systemd/system/pbs-restore-loop-devices.service <<'UNIT'
+[Unit]
+Description=Precreeaza /dev/loop0-63 pt passthrough LXC pbs-restore
+DefaultDependencies=no
+Before=pve-container@100.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for i in $(seq 0 63); do [ -e /dev/loop$i ] || mknod /dev/loop$i b 7 $i; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now pbs-restore-loop-devices.service
+```
+
 Adaugă-le în config-ul LXC-ului (înlocuiește minor-ele dacă diferă de mai
 jos; la noi au fost `kvm=232`, `vhost-net=238`, `vhost-vsock=241`,
 `fuse=229`, `loop-control=237`):
