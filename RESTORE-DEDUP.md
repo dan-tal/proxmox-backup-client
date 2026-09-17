@@ -12,13 +12,15 @@ Deduplication** instalat (implicit VM ID `101`, container LXC al aplicației
 `PBS_LXC_CTID` în serviciul systemd `pbs-restore`, vezi README secțiunea
 Deploy).
 
-## 0. Reset complet (rulează oricând ceva pare blocat)
+**Regulă de bază: înainte să selectezi orice disc nou de recuperat, treci
+mereu prin Pasul 1 (reset/unmap).** Nu conta pe ce a rămas de la o
+recuperare anterioară — `proxmox-backup-client` refuză să mapeze a doua
+oară aceeași arhivă ("already mapped, cannot map twice") dacă a rămas ceva
+activ, așa că pornești mereu de la zero.
 
-Dacă nu ești sigur în ce stare a rămas ceva de la o încercare anterioară
-(disc încă atașat la VM, mapare `proxmox-backup-client` încă activă, stare
-internă a aplicației încurcată), cel mai simplu e să resetezi tot înainte
-să începi o recuperare nouă. Rulează pe host (`pveDan`) — sigur, indiferent
-ce era atașat:
+## Pasul 1 — Reset complet (obligatoriu, de fiecare dată, înainte de orice disc nou)
+
+Rulează pe host (`pveDan`) — sigur, indiferent ce era atașat înainte:
 
 ```bash
 # 1) detaseaza orice disc de backup (/dev/loopN) de la VM-ul de recuperare
@@ -51,23 +53,14 @@ pct reboot 100     # containerul aplicatiei
 qm stop 101        # VM-ul de recuperare, daca era pornit cu discul atasat
 ```
 
-## 0b. Verifică dacă VM-ul de recuperare are deja ceva atașat
+Abia după ce vezi "curat, nimic mapat" și "curat, niciun disc atasat" treci
+mai departe și alegi discul/fișierul de recuperat.
 
-Dacă nu ai făcut reset-ul complet de mai sus, verifică măcar atât:
+## Pasul 2 — Deconectează VM-ul de recuperare de la rețea
 
-```bash
-qm config 101 | grep -i scsi
-```
-
-Dacă vezi un `scsiN: /dev/loopX,...` (nu un disc normal de storage, ex.
-`local-lvm:vm-101-disk-...`), e un leftover de la o recuperare anterioară —
-mergi direct la pasul 2 (detașare) înainte să continui.
-
-## 1. Deconectează VM-ul de recuperare de la rețea
-
-Măsură de siguranță: discul atașat conține date dintr-un alt domeniu/context
-(backup-ul altei mașini) — nu vrem ca acest VM să înceapă conversații de
-rețea (AD, agenți, etc.) cât timp are discul ăla montat.
+Măsură de siguranță: discul pe care urmează să-l atașezi conține date dintr-un
+alt domeniu/context (backup-ul altei mașini) — nu vrem ca acest VM să înceapă
+conversații de rețea (AD, agenți, etc.) cât timp are discul ăla montat.
 
 Din GUI Proxmox: VM 101 → Hardware → Network Device → debifează "Connected".
 
@@ -78,27 +71,22 @@ fără să schimbi nimic altceva, doar adaugă `,link_down=1`):
 qm set 101 --net0 <net-config-curent>,link_down=1
 ```
 
-## 2. Detașează orice disc de backup atașat anterior
+## Pasul 3 — Mapează și atașează discul cu fișierul/folderul dorit
 
-Dacă pasul 0 a găsit un `scsiN` de tip `/dev/loopX`:
+Selectează fișierul/folderul în GUI-ul aplicației. Când primești eroarea
+409, mesajul conține deja comenzile exacte pentru **acest** fișier — nu le
+ghici, copiază-le direct de acolo:
 
-```bash
-qm set 101 --delete scsi1          # ajusteaza scsi1 daca era alt slot
-losetup -a | grep loop             # ca sa vezi ce loop-uri sunt inca active
-pct exec 100 -- proxmox-backup-client unmap /dev/loopN   # N = cel gasit mai sus
-```
+1. `pct exec 100 -- python3 /opt/pbs-restore/scripts/pbs-map-for-recovery.py <snapshot> <archive>`
+   → tipărește `... mapped on /dev/loopN`, notează device-ul.
+2. `qm set 101 --scsiN /dev/loopN,ro=1` → înlocuiește `scsiN` cu un slot
+   liber (de obicei `scsi1`, dacă ai făcut Pasul 1 corect) și `loopN` cu
+   device-ul de la pasul anterior.
 
-## 3. Mapează și atașează discul cu fișierul/folderul dorit
+Rezultatul: un disc nou atașat la VM 101, **read-only** (`ro=1` — niciodată
+nu scriem pe datele din backup).
 
-Nu ghici comenzile — GUI-ul aplicației generează, în mesajul de eroare 409
-pentru fișierul respectiv, comanda `pct exec 100 -- ...` exactă (cu snapshot-ul
-și arhiva corecte deja completate) și comanda `qm set 101 --scsiN ...` de după.
-Copiază-le de acolo și rulează-le pe host, în ordine.
-
-Rezultatul: un disc nou (de obicei ~scsi1) atașat la VM 101, **read-only**
-(`ro=1` — niciodată nu scriem pe datele din backup).
-
-## 4. În Windows: adu discul online și copiază fișierul
+## Pasul 4 — În Windows: adu discul online și copiază fișierul
 
 Dacă VM-ul rula deja, discul nou poate să nu apară imediat (hot-add PCIe nu
 mereu e detectat automat):
@@ -131,7 +119,10 @@ robocopy "<folder-sursa-pe-discul-nou>" "C:\Recuperat" /B /E
 Verifică mărimea fișierelor copiate — trebuie să corespundă cu ce arăta PVE
 în GUI-ul nativ, nu 0 sau nesemnificativ mic.
 
-## 5. Cleanup
+## Pasul 5 — Cleanup (înainte să treci la următorul fișier)
+
+Ia fișierele recuperate din `C:\Recuperat` pe VM-ul de recuperare (RDP/share)
+înainte de cleanup, altfel rămân doar pe discul de sistem al VM-ului.
 
 ```powershell
 Set-Disk -Number N -IsOffline $true
@@ -143,6 +134,5 @@ pct exec 100 -- proxmox-backup-client unmap /dev/loopN
 qm set 101 --net0 <net-config-curent>   # scoate link_down=1, reconecteaza reteaua
 ```
 
-Ia fișierele recuperate din `C:\Recuperat` pe VM-ul de recuperare (RDP/share)
-înainte de cleanup, altfel rămân doar pe discul de sistem al VM-ului (nu se
-pierd la detașare, dar tot trebuie scoase de-acolo către utilizatorul final).
+Pentru **următorul** fișier/disc de recuperat, reia de la Pasul 1 (reset
+complet) — nu sări direct la Pasul 3.
