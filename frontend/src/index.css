@@ -1,1 +1,8 @@
 @import "tailwindcss";
+
+/* Tailwind preflight seteaza cursor:default pe <button> - il vrem pointer,
+   ca orice alt element clickabil, in toata aplicatia (nu doar pe iconBtn/
+   primaryBtn - patch-uri individuale ar fi trebuit repetate peste tot). */
+button:not(:disabled) {
+  cursor: pointer;
+}
