@@ -43,10 +43,25 @@ losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"
 qm config 101 | grep -i scsi || echo "curat, niciun disc atasat"
 ```
 
-Dacă tot nu merge (de ex. un `/dev/loopN` refuză să se elibereze), poți
-oricând reporni containerul aplicației sau chiar VM-ul de recuperare complet
-— niciuna din operațiile de mai sus nu ține stare care să nu supraviețuiască
-unui restart:
+**Dacă un `/dev/loopN` refuză să se elibereze prin `unmap`** (mesaj gen
+"found mapping with dead process... error reading pidfile... No such file
+or directory" — procesul care-l ținea a murit fără cleanup, `unmap` nu mai
+are cu ce să-l identifice), forțează detașarea direct la nivel de kernel,
+apoi verifică dacă mai există un sub-loop de partiție care încă îl ține
+ocupat (aplicația creează unul secundar, scoped la o singură partiție -
+un `losetup -d` pe loop-ul părinte se marchează "reușit" dar rămâne agățat
+până se detașează și acesta):
+
+```bash
+pct exec 100 -- losetup -a   # cauta orice loop cu "(/dev/loopN)" ca backing - e un sub-loop de partitie
+pct exec 100 -- losetup -d /dev/loopM   # sub-loop-ul de partitie gasit mai sus, DACA exista - detaseaza-l primul
+losetup -d /dev/loopN        # abia acum loop-ul parinte se elibereaza efectiv
+losetup -a | grep pbs-loopdev || echo "curat, nimic mapat"
+```
+
+Dacă tot nu merge, poți oricând reporni containerul aplicației sau chiar
+VM-ul de recuperare complet — niciuna din operațiile de mai sus nu ține
+stare care să nu supraviețuiască unui restart:
 
 ```bash
 pct reboot 100     # containerul aplicatiei
